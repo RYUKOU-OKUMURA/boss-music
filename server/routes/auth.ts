@@ -4,25 +4,15 @@ import { saveRefreshToken } from '../services/tokenStore';
 import { createOAuth2Client, SCOPES } from '../services/driveClient';
 import { adminCookieName, createAdminSessionToken } from '../middleware/adminAuth';
 import { asyncHandler } from '../utils/asyncHandler';
-
-const pendingOAuthStates = new Map<string, number>();
-const STATE_TTL_MS = 10 * 60 * 1000;
-
-function cleanupStates() {
-  const now = Date.now();
-  for (const [k, exp] of pendingOAuthStates) {
-    if (exp < now) pendingOAuthStates.delete(k);
-  }
-}
+import { saveOAuthState, consumeOAuthState } from '../services/oauthStateStore';
 
 export const authRouter = Router();
 
 authRouter.get(
   '/auth/google',
   asyncHandler(async (_req, res) => {
-    cleanupStates();
     const state = crypto.randomBytes(24).toString('hex');
-    pendingOAuthStates.set(state, Date.now() + STATE_TTL_MS);
+    await saveOAuthState(state);
     const oauth2 = createOAuth2Client();
     const url = oauth2.generateAuthUrl({
       access_type: 'offline',
@@ -42,12 +32,11 @@ authRouter.get(
       res.status(400).send('Missing code or state');
       return;
     }
-    const exp = pendingOAuthStates.get(state);
-    if (!exp || exp < Date.now()) {
+    const ok = await consumeOAuthState(state);
+    if (!ok) {
       res.status(400).send('Invalid or expired state');
       return;
     }
-    pendingOAuthStates.delete(state);
     const oauth2 = createOAuth2Client();
     const { tokens } = await oauth2.getToken(code);
     if (!tokens.refresh_token) {

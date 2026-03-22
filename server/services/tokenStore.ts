@@ -1,6 +1,8 @@
 import crypto from 'crypto';
 import fs from 'fs/promises';
 import path from 'path';
+import { KV_REFRESH_TOKEN } from './kvKeys';
+import { getRedis, isRedisConfigured } from './redisStore';
 
 const ALGO = 'aes-256-gcm';
 
@@ -39,12 +41,26 @@ const tokenPath = () =>
 export async function saveRefreshToken(refreshToken: string): Promise<void> {
   const body = JSON.stringify({ refresh_token: refreshToken });
   const enc = encrypt(body);
+  if (isRedisConfigured()) {
+    await getRedis().set(KV_REFRESH_TOKEN, enc);
+    return;
+  }
   const p = tokenPath();
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, enc, 'utf8');
 }
 
 export async function loadRefreshToken(): Promise<string | null> {
+  if (isRedisConfigured()) {
+    try {
+      const enc = await getRedis().get<string>(KV_REFRESH_TOKEN);
+      if (!enc || typeof enc !== 'string') return null;
+      const json = JSON.parse(decrypt(enc)) as { refresh_token?: string };
+      return json.refresh_token ?? null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const enc = await fs.readFile(tokenPath(), 'utf8');
     const json = JSON.parse(decrypt(enc)) as { refresh_token?: string };

@@ -2,6 +2,8 @@ import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
 import type { drive_v3 } from 'googleapis';
+import { KV_CATALOG_FILE_ID } from './kvKeys';
+import { getRedis, isRedisConfigured } from './redisStore';
 
 export type DriveClient = drive_v3.Drive;
 
@@ -40,6 +42,14 @@ export function emptyCatalog(): CatalogRoot {
 async function readStoredCatalogFileId(): Promise<string | null> {
   const env = process.env.GOOGLE_DRIVE_CATALOG_FILE_ID?.trim();
   if (env) return env;
+  if (isRedisConfigured()) {
+    try {
+      const id = await getRedis().get<string>(KV_CATALOG_FILE_ID);
+      return typeof id === 'string' && id.trim() ? id.trim() : null;
+    } catch {
+      return null;
+    }
+  }
   try {
     const raw = await fs.readFile(catalogIdPath(), 'utf8');
     return raw.trim() || null;
@@ -49,6 +59,10 @@ async function readStoredCatalogFileId(): Promise<string | null> {
 }
 
 async function writeStoredCatalogFileId(id: string): Promise<void> {
+  if (isRedisConfigured()) {
+    await getRedis().set(KV_CATALOG_FILE_ID, id);
+    return;
+  }
   const p = catalogIdPath();
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, id, 'utf8');

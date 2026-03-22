@@ -36,7 +36,7 @@ npm run dev:all
 2. **Drive と連携する**で OAuth 完了（別タブ）。`SESSION_SECRET` があると管理者用 Cookie が付く
 3. 曲をアップロード（Cookie または `ADMIN_SECRET` / `VITE_ADMIN_SECRET` で認証）
 
-カタログファイル ID は `data/catalog-file-id.txt` に保存されます（`.gitignore` 済み）。
+カタログファイル ID は、Redis 未使用時は `data/catalog-file-id.txt` に保存されます（`.gitignore` 済み）。Vercel（パターン B）では **Redis** に保存します。
 
 ### 管理者認証が 401 のとき
 
@@ -60,25 +60,24 @@ NODE_ENV=production npm start
 
 ## Vercel デプロイ
 
-Vercel は **常時起動の Express 専用プロセス**向けではないため、次のどちらかで運用する前提を README で固定しておくと混乱が減ります。
+### パターン B（本リポジトリの既定: 静的 + Serverless API を同一プロジェクト）
 
-### パターン A（推奨・移行コストが低い）
+- **構成**: [`api/index.ts`](api/index.ts) が [`serverless-http`](https://github.com/dougmoscrop/serverless-http) で [`createApiApp()`](server/app.ts) をラップし、[`vercel.json`](vercel.json) の `rewrites` で `/api/*` をこの関数へ流します。フロントは `npm run build` の `dist/`、SPA は `index.html` への rewrite。
+- **永続化（本番必須）**: Serverless ではローカルファイルが共有されないため、**Vercel の Storage で Redis（Upstash）** をプロジェクトに接続し、環境変数 **`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`** が入るようにします（ダッシュボードの Integrations から追加）。これによりリフレッシュトークン（暗号化済み）・OAuth state・カタログ fileId が Redis に保存されます。Redis が無いローカル開発では従来どおり `data/` とメモリを使います。
+- **OAuth**: 本番の `OAUTH_REDIRECT_URI` を `https://<あなたのドメイン>/api/auth/google/callback` にし、Google Cloud の承認済みリダイレクト URI と一致させます。
+- **制約**: **リクエストボディサイズ**・**関数の最大実行時間**（[`vercel.json`](vercel.json) で `api/index.ts` に `maxDuration: 60` を例示）・**コールドスタート**に注意。大きな音声ファイルのアップロードが失敗する場合はプランや設計の見直しが必要です。
+- **フロント**: 同一オリジンなので **`VITE_API_BASE_URL` は未設定のまま**でよい（相対 `/api`）。
 
-- **Vercel**: `npm run build` の出力（`dist/`）だけを配信。ルート直下に [`vercel.json`](vercel.json) があり、SPA 用の `rewrites` で `index.html` にフォールバックします。
-- **API**: Express は **別ホスト**（Railway / Render / Fly.io / Cloud Run 等）にデプロイ。本番のフロントでは **`VITE_API_BASE_URL`** にその API のオリジン（末尾スラッシュなし）を設定してビルドします（例: `https://api.example.com`）。
-- **OAuth**: Google Cloud の「承認済みのリダイレクト URI」に、開発時どおり **フロントのオリジン**に紐づくコールバック（例: `http://localhost:3000/api/auth/google/callback`）に加え、**本番 API のコールバック URL**（例: `https://api.example.com/api/auth/google/callback`）を登録します。API 側の環境変数 `OAUTH_REDIRECT_URI` をその URL に合わせます。
-- **CORS**: フロントと API のオリジンが異なる場合は、API でフロントオリジンを許可するか、同一ドメインのリバースプロキシで揃えます。
+### パターン A（API だけ別ホストに置く場合）
 
-### パターン B（API も Vercel に載せる場合）
+- **Vercel** は `dist/` のみ。Express は Railway / Render 等。
+- 本番ビルド時に **`VITE_API_BASE_URL`** に API のオリジンを設定する。
+- **CORS** が必要になることがある（このリポジトリの API は CORS ミドルウェア未実装のため、別オリジンから叩く場合は API 側の対応が別途必要）。
 
-- Express を **単一の Serverless ハンドラ**（例: `api/index.ts` で `app` を export）にまとめ、`vercel.json` の `rewrites` で `/api/*` をその関数へ向ける構成に寄せます。
-- **制約**: 実行時間・ペイロード上限・コールドスタートがあります。
-- **永続化**: `data/drive-tokens.enc` や `data/catalog-file-id.txt` は **インスタンス間で共有されない**ため、本番では Vercel KV / Postgres / 環境変数（単一値のみ）などへ移す **別タスク**が必要です。パターン B を選ぶ場合はその技術的負債をイシュー化してください。
+### 環境変数（Vercel・パターン B）
 
-### 環境変数（本番）
-
-- API ホスト側: `OAUTH_REDIRECT_URI`、`SESSION_SECRET`、`ADMIN_SECRET`、`GOOGLE_*`、`TOKEN_ENCRYPTION_KEY`、`GOOGLE_DRIVE_FOLDER_ID` などを Vercel 以外のホスティングの Environment Variables に設定します。
-- フロント（パターン A）: `VITE_API_BASE_URL` を API のオリジンに設定してから `npm run build` します（秘密は `VITE_` に入れないこと）。
+- 既存の `GOOGLE_*`、`OAUTH_REDIRECT_URI`、`TOKEN_ENCRYPTION_KEY`、`SESSION_SECRET`、`ADMIN_SECRET`、`GOOGLE_DRIVE_FOLDER_ID` に加え、**`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`**（Redis 連携）。
+- 任意: **`GOOGLE_DRIVE_CATALOG_FILE_ID`**（カタログ Drive ファイル ID を固定したい場合）。
 
 ## Firestore / Firebase からの移行
 
