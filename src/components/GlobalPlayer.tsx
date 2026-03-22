@@ -1,5 +1,6 @@
 import React from 'react';
 import { useAudio } from '../context/AudioContext';
+import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -28,7 +29,7 @@ export const GlobalPlayer: React.FC = () => {
       {/* Track Info */}
       <div className="flex items-center gap-4 w-1/3">
         <div className="w-12 h-12 rounded-md overflow-hidden relative group">
-          <img src={currentTrack.coverImage} alt={currentTrack.title} className="w-full h-full object-cover" />
+          <img src={resolveCoverImageUrl(currentTrack)} alt={currentTrack.title} className="w-full h-full object-cover" />
           <Link to={`/track/${currentTrack.id}`} className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
             <Maximize2 className="w-4 h-4 text-white" />
           </Link>

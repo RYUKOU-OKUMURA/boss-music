@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useAudio } from '../context/AudioContext';
+import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { VinylDisc } from './VinylDisc';
 import { Menu, Play, Pause, VolumeX } from 'lucide-react';
 
@@ -53,7 +54,7 @@ export const TrackPage: React.FC = () => {
       </div>
 
       <div className="relative z-10 w-full max-w-4xl h-screen flex flex-col items-center justify-center hover-trigger group">
-        <VinylDisc isPlaying={isCurrent && isPlaying} coverImage={track.coverImage} alt={track.title} />
+        <VinylDisc isPlaying={isCurrent && isPlaying} coverImage={resolveCoverImageUrl(track)} alt={track.title} />
 
         <div className="hover-reveal absolute inset-0 flex flex-col items-center justify-center text-center space-y-8 pointer-events-none">
           <div className="space-y-2">

@@ -1,8 +1,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { collection, onSnapshot, query, orderBy, getDocs, setDoc, doc } from 'firebase/firestore';
-import { db } from '../firebase';
-import trackData from '../data/tracks.json';
+import { resolveAudioPlaybackUrl } from '../lib/mediaUrls';
+import { resolveAudioSource, revokeObjectUrl } from '../lib/audioCache';
 
 export interface Track {
   id: string;
@@ -15,6 +14,12 @@ export interface Track {
   playable: boolean;
   tags: string[];
   order?: number;
+  driveAudioFileId?: string;
+  driveCoverFileId?: string;
+}
+
+interface TracksApiResponse {
+  tracks: Track[];
 }
 
 interface AudioContextType {
@@ -53,51 +58,55 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const [volume, setVolumeState] = useState<number>(1);
-  
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const navigate = useNavigate();
   const location = useLocation();
+  const lastTrackIdRef = useRef<string | null>(null);
+  const blobUrlRef = useRef<string | null>(null);
+  const isPlayingRef = useRef(isPlaying);
 
-  // Fetch tracks from Firestore
   useEffect(() => {
-    const seedDataIfEmpty = async () => {
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadTracks() {
+      setIsLoading(true);
       try {
-        const tracksRef = collection(db, 'tracks');
-        const snapshot = await getDocs(tracksRef);
-        
-        if (snapshot.empty) {
-          console.log('Seeding initial tracks to Firestore...');
-          const promises = trackData.tracks.map((track, index) => {
-            const trackDoc = doc(tracksRef, track.id);
-            return setDoc(trackDoc, { ...track, order: index });
-          });
-          await Promise.all(promises);
-          console.log('Seeding complete.');
+        const res = await fetch('/api/tracks');
+        if (!res.ok) throw new Error(await res.text());
+        const data = (await res.json()) as TracksApiResponse;
+        if (!cancelled) {
+          setTracks(Array.isArray(data.tracks) ? data.tracks : []);
         }
-      } catch (error) {
-        console.error('Error seeding data:', error);
+      } catch (e) {
+        console.error('Failed to load tracks', e);
+        if (!cancelled) setTracks([]);
+      } finally {
+        if (!cancelled) setIsLoading(false);
       }
+    }
+
+    loadTracks();
+
+    const reload = () => {
+      fetch('/api/tracks')
+        .then((r) => r.json())
+        .then((data: TracksApiResponse) => {
+          setTracks(Array.isArray(data.tracks) ? data.tracks : []);
+        })
+        .catch(console.error);
     };
-
-    seedDataIfEmpty().then(() => {
-      const q = query(collection(db, 'tracks'), orderBy('order', 'asc'));
-      const unsubscribe = onSnapshot(q, (snapshot) => {
-        const fetchedTracks: Track[] = [];
-        snapshot.forEach((doc) => {
-          fetchedTracks.push({ id: doc.id, ...doc.data() } as Track);
-        });
-        setTracks(fetchedTracks);
-        setIsLoading(false);
-      }, (error) => {
-        console.error('Error fetching tracks:', error);
-        setIsLoading(false);
-      });
-
-      return () => unsubscribe();
-    });
+    window.addEventListener('boss-music-catalog-changed', reload);
+    return () => {
+      cancelled = true;
+      window.removeEventListener('boss-music-catalog-changed', reload);
+    };
   }, []);
 
-  // Initialize audio element
   useEffect(() => {
     if (!audioRef.current) {
       audioRef.current = new Audio();
@@ -127,34 +136,62 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     };
   }, [tracks.length]);
 
-  // Handle track change and play/pause state
   useEffect(() => {
     if (!audioRef.current || tracks.length === 0) return;
 
     const track = tracks[currentTrackIndex];
     if (!track) return;
 
-    let srcChanged = false;
-    // Get the raw src attribute to compare with the relative URL
-    const currentSrc = audioRef.current.getAttribute('src');
-    if (currentSrc !== track.audioUrl) {
-      audioRef.current.src = track.audioUrl;
-      audioRef.current.load();
-      srcChanged = true;
+    const trackChanged = lastTrackIdRef.current !== track.id;
+
+    if (!trackChanged) {
+      if (isPlaying) {
+        const playPromise = audioRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((error) => {
+            console.error('Audio play failed:', error);
+            setIsPlaying(false);
+          });
+        }
+      } else {
+        audioRef.current.pause();
+      }
+      return;
     }
 
-    if (isPlaying) {
-      const playPromise = audioRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise.catch(error => {
-          console.error("Audio play failed:", error);
-          // Auto-play was prevented or network error
-          setIsPlaying(false);
-        });
+    lastTrackIdRef.current = track.id;
+    let cancelled = false;
+
+    (async () => {
+      const streamUrl = resolveAudioPlaybackUrl(track);
+      const src = await resolveAudioSource(track.id, streamUrl);
+      if (cancelled || !audioRef.current) return;
+
+      if (blobUrlRef.current) {
+        revokeObjectUrl(blobUrlRef.current);
+        blobUrlRef.current = null;
       }
-    } else if (!srcChanged) {
-      audioRef.current.pause();
-    }
+      if (src.startsWith('blob:')) {
+        blobUrlRef.current = src;
+      }
+
+      audioRef.current.src = src;
+      audioRef.current.load();
+
+      if (isPlayingRef.current) {
+        const playPromise = audioRef.current.play();
+        if (playPromise !== undefined) {
+          playPromise.catch((error) => {
+            console.error('Audio play failed:', error);
+            setIsPlaying(false);
+          });
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
   }, [currentTrackIndex, tracks, isPlaying]);
 
   const play = (index?: number) => {
@@ -176,8 +213,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (tracks.length === 0) return;
     setCurrentTrackIndex((prev) => (prev + 1) % tracks.length);
     setIsPlaying(true);
-    
-    // Update URL if we are on a track page
+
     if (location.pathname.startsWith('/track/')) {
       const nextTrack = tracks[(currentTrackIndex + 1) % tracks.length];
       navigate(`/track/${nextTrack.id}`, { replace: true });
@@ -188,8 +224,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (tracks.length === 0) return;
     setCurrentTrackIndex((prev) => (prev - 1 + tracks.length) % tracks.length);
     setIsPlaying(true);
-    
-    // Update URL if we are on a track page
+
     if (location.pathname.startsWith('/track/')) {
       const prevTrack = tracks[(currentTrackIndex - 1 + tracks.length) % tracks.length];
       navigate(`/track/${prevTrack.id}`, { replace: true });
@@ -236,4 +271,3 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     </AudioContext.Provider>
   );
 };
-
