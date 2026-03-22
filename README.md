@@ -25,6 +25,8 @@ React（Vite）フロントと Express API。**Firebase は使いません。** 
 npm run dev:all
 ```
 
+（Vite は API が `8787` で待ち受けてから起動するので、起動直後のプロキシ `ECONNREFUSED` を避けています。`API_PORT` を変えた場合は `package.json` の `wait-on` も合わせてください。）
+
 - フロント: http://localhost:3000（`/api` は Vite が 8787 にプロキシ）
 - API: http://localhost:8787
 
@@ -35,6 +37,13 @@ npm run dev:all
 3. 曲をアップロード（Cookie または `ADMIN_SECRET` / `VITE_ADMIN_SECRET` で認証）
 
 カタログファイル ID は `data/catalog-file-id.txt` に保存されます（`.gitignore` 済み）。
+
+### 管理者認証が 401 のとき
+
+- **`SESSION_SECRET` は 16 文字以上**。満たないと Cookie は発行されません。設定後は **API を再起動**し、**Drive と連携するをもう一度**（既存 Cookie は無効になります）。
+- **`OAUTH_REDIRECT_URI` のポート**を、実際に開いている URL（例: Vite が `3001` に逃げているなら `http://localhost:3001/...`）と揃える。
+- **`VITE_ADMIN_SECRET` を変えたら Vite を再起動**（`dev:all` を止めて起動し直し）。`import.meta.env` は起動時に固定されます。
+- **`ADMIN_SECRET` と `VITE_ADMIN_SECRET`（または画面の管理者シークレット入力）**は **完全一致**（余計な引用符や全角スペースなし）。
 
 ## 本番（同一プロセスで静的＋API）
 

@@ -51,9 +51,17 @@ function parseCookies(header: string | undefined): Record<string, string> {
   return out;
 }
 
+function headerString(req: Request, name: string): string | undefined {
+  const h = req.headers[name];
+  if (h === undefined) return undefined;
+  const s = Array.isArray(h) ? h[0] : h;
+  return typeof s === 'string' ? s.trim() : undefined;
+}
+
 export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
   const adminSecret = process.env.ADMIN_SECRET?.trim();
-  if (adminSecret && req.headers['x-admin-secret'] === adminSecret) {
+  const sentSecret = headerString(req, 'x-admin-secret');
+  if (adminSecret && sentSecret && sentSecret === adminSecret) {
     next();
     return;
   }

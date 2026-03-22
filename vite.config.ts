@@ -20,6 +20,8 @@ export default defineConfig(({mode}) => {
         '/api': {
           target: env.API_PROXY_TARGET || 'http://127.0.0.1:8787',
           changeOrigin: true,
+          // Express が付ける Set-Cookie を、ブラウザが localhost:3000 用として保持しやすくする
+          cookieDomainRewrite: '',
         },
       },
     },

@@ -5,7 +5,7 @@ import path from 'path';
 const ALGO = 'aes-256-gcm';
 
 function getKey(): Buffer {
-  const k = process.env.TOKEN_ENCRYPTION_KEY;
+  const k = process.env.TOKEN_ENCRYPTION_KEY?.trim();
   if (!k || k.length < 8) {
     throw new Error('TOKEN_ENCRYPTION_KEY must be set (min 8 chars)');
   }
