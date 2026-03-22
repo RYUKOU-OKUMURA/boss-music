@@ -8,7 +8,8 @@
     "server:dev": "tsx watch server/index.ts",
     "dev:all": "concurrently -n api,web -c blue,green \"npm run server:dev\" \"wait-on tcp:127.0.0.1:8787 && npm run dev\"",
     "start": "tsx server/index.ts",
-    "build": "vite build",
+    "build": "vite build && npm run build:api",
+    "build:api": "esbuild api/index.ts --bundle --platform=node --format=esm --outfile=api/index.mjs --packages=external",
     "preview": "vite preview",
     "clean": "rm -rf dist",
     "lint": "tsc --noEmit"
@@ -38,6 +39,7 @@
     "@types/multer": "^2.1.0",
     "@types/node": "^22.14.0",
     "autoprefixer": "^10.4.21",
+    "esbuild": "^0.27.4",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
