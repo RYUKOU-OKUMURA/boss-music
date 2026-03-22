@@ -1,17 +1,16 @@
-import crypto from 'crypto';
 import { Router } from 'express';
 import { saveRefreshToken } from '../services/tokenStore';
 import { createOAuth2Client, SCOPES } from '../services/driveClient';
 import { adminCookieName, createAdminSessionToken } from '../middleware/adminAuth';
 import { asyncHandler } from '../utils/asyncHandler';
-import { saveOAuthState, consumeOAuthState } from '../services/oauthStateStore';
+import { createSignedState, saveOAuthState, consumeOAuthState } from '../services/oauthStateStore';
 
 export const authRouter = Router();
 
 authRouter.get(
   '/auth/google',
   asyncHandler(async (_req, res) => {
-    const state = crypto.randomBytes(24).toString('hex');
+    const state = createSignedState();
     await saveOAuthState(state);
     const oauth2 = createOAuth2Client();
     const url = oauth2.generateAuthUrl({

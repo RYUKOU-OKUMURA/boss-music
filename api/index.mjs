@@ -303,7 +303,6 @@ tracksRouter.get(
 );
 
 // server/routes/auth.ts
-import crypto3 from "crypto";
 import { Router as Router2 } from "express";
 
 // server/middleware/adminAuth.ts
@@ -376,6 +375,7 @@ function requireAdmin(req, res, next) {
 var adminCookieName = COOKIE;
 
 // server/services/oauthStateStore.ts
+import crypto3 from "crypto";
 var STATE_TTL_MS = 10 * 60 * 1e3;
 var pendingOAuthStates = /* @__PURE__ */ new Map();
 function cleanupStates() {
@@ -383,6 +383,32 @@ function cleanupStates() {
   for (const [k, exp] of pendingOAuthStates) {
     if (exp < now) pendingOAuthStates.delete(k);
   }
+}
+function getHmacSecret() {
+  return process.env.SESSION_SECRET?.trim() || process.env.TOKEN_ENCRYPTION_KEY?.trim() || null;
+}
+function createSignedState() {
+  const secret = getHmacSecret();
+  const nonce = crypto3.randomBytes(24).toString("hex");
+  if (!secret) return nonce;
+  const expiry = Date.now() + STATE_TTL_MS;
+  const payload = `${nonce}.${expiry}`;
+  const sig = crypto3.createHmac("sha256", secret).update(payload).digest("hex");
+  return `${payload}.${sig}`;
+}
+function verifySignedState(state) {
+  const secret = getHmacSecret();
+  if (!secret) return false;
+  const parts = state.split(".");
+  if (parts.length !== 3) return false;
+  const [nonce, expiryStr, sig] = parts;
+  if (!nonce || !expiryStr || !sig) return false;
+  const payload = `${nonce}.${expiryStr}`;
+  const expected = crypto3.createHmac("sha256", secret).update(payload).digest("hex");
+  if (sig !== expected) return false;
+  const expiry = Number(expiryStr);
+  if (Number.isNaN(expiry) || expiry < Date.now()) return false;
+  return true;
 }
 async function saveOAuthState(state) {
   if (isRedisConfigured()) {
@@ -403,9 +429,11 @@ async function consumeOAuthState(state) {
   }
   cleanupStates();
   const exp = pendingOAuthStates.get(state);
-  if (!exp || exp < Date.now()) return false;
-  pendingOAuthStates.delete(state);
-  return true;
+  if (exp && exp >= Date.now()) {
+    pendingOAuthStates.delete(state);
+    return true;
+  }
+  return verifySignedState(state);
 }
 
 // server/routes/auth.ts
@@ -413,7 +441,7 @@ var authRouter = Router2();
 authRouter.get(
   "/auth/google",
   asyncHandler(async (_req, res) => {
-    const state = crypto3.randomBytes(24).toString("hex");
+    const state = createSignedState();
     await saveOAuthState(state);
     const oauth2 = createOAuth2Client();
     const url = oauth2.generateAuthUrl({
