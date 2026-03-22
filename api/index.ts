@@ -1,5 +1,7 @@
-import serverless from 'serverless-http';
+/**
+ * Vercel Serverless: Express を default export（serverless-http は ESM で壊れやすい）
+ * @see https://vercel.com/docs/frameworks/backend/express
+ */
 import { createApiApp } from '../server/app';
 
-const app = createApiApp();
-export default serverless(app);
+export default createApiApp();
