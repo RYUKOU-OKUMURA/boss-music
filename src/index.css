@@ -1,0 +1,54 @@
+@import "tailwindcss";
+
+@theme {
+  --color-zen-bg: #0a0b0d;
+  --color-zen-mist: #e5e7eb;
+  --color-zen-accent: #BC00FF;
+  --color-neon-cyan: #8ff5ff;
+  --color-neon-purple: #d674ff;
+  --color-neon-green: #8eff71;
+  --color-void: #0e0e10;
+  --color-surface: #13131a;
+  --color-surface-container: #1a1a24;
+  --color-surface-bright: #252533;
+  
+  --font-headline: "Space Grotesk", "Shippori Mincho", serif;
+  --font-body: "Space Grotesk", "Noto Sans JP", sans-serif;
+}
+
+@layer utilities {
+  .landscape-gradient {
+    background: linear-gradient(180deg, #0a0b0d 0%, #1a1c1e 50%, #0a0b0d 100%);
+    background-size: 200% 200%;
+    animation: drift 30s ease infinite alternate;
+  }
+  .fog-layer {
+    position: absolute;
+    inset: 0;
+    background: radial-gradient(circle at 50% 50%, rgba(188, 0, 255, 0.05) 0%, transparent 70%);
+    animation: float-slow 15s ease-in-out infinite;
+  }
+  .zen-glass {
+    backdrop-filter: blur(12px);
+    background: rgba(10, 11, 13, 0.4);
+  }
+  .vertical-text {
+    writing-mode: vertical-rl;
+  }
+  .neon-glow {
+    box-shadow: 0 0 40px rgba(188, 0, 255, 0.2), inset 0 0 20px rgba(188, 0, 255, 0.1);
+  }
+}
+
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0px) scale(1); opacity: 0.3; }
+  50% { transform: translateY(-20px) scale(1.05); opacity: 0.6; }
+}
+@keyframes drift {
+  from { background-position: 0% 50%; }
+  to { background-position: 100% 50%; }
+}
+@keyframes spin-slow {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
