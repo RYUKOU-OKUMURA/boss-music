@@ -62,7 +62,7 @@ NODE_ENV=production npm start
 
 ### パターン B（本リポジトリの既定: 静的 + Serverless API を同一プロジェクト）
 
-- **構成**: [`api/index.ts`](api/index.ts) が `serverless-http` で [`createApiApp()`](server/app.ts) をラップして export（`api/` は生の `export default app` だけだと失敗することがある）。[`vercel.json`](vercel.json) に `includeFiles: server/**` を付け、関数バンドルにサーバー側コードを含めます。`rewrites` で `/api/*` をこの関数へ流します。フロントは `npm run build` の `dist/`、SPA は `index.html` への rewrite。
+- **構成**: [`api/index.ts`](api/index.ts) は [`createApiApp()`](server/app.ts) を **そのまま default export**（[Vercel の Express 向け公式](https://vercel.com/docs/frameworks/backend/express)）。`serverless-http` は使わない（Lambda 向けで Vercel では 500 になり得る）。[`vercel.json`](vercel.json) に `includeFiles: server/**` を付け、関数バンドルにサーバー側コードを含めます。`rewrites` で `/api/*` をこの関数へ流します。フロントは `npm run build` の `dist/`、SPA は `index.html` への rewrite。
 - **永続化（本番必須）**: Serverless ではローカルファイルが共有されないため、**Vercel の Storage で Redis（Upstash）** をプロジェクトに接続し、環境変数 **`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`** が入るようにします（ダッシュボードの Integrations から追加）。これによりリフレッシュトークン（暗号化済み）・OAuth state・カタログ fileId が Redis に保存されます。Redis が無いローカル開発では従来どおり `data/` とメモリを使います。
 - **OAuth**: 本番の `OAUTH_REDIRECT_URI` を `https://<あなたのドメイン>/api/auth/google/callback` にし、Google Cloud の承認済みリダイレクト URI と一致させます。
 - **制約**: **リクエストボディサイズ**・**関数の最大実行時間**（[`vercel.json`](vercel.json) で `api/index.ts` に `maxDuration: 60` を例示）・**コールドスタート**に注意。大きな音声ファイルのアップロードが失敗する場合はプランや設計の見直しが必要です。

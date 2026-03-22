@@ -31,6 +31,20 @@ export function createApiApp() {
   const app = express();
   app.set('trust proxy', 1);
 
+  // Vercel の api/index へ届くリクエストは path が /health のように /api が付かない場合がある
+  app.use((req, _res, next) => {
+    const u = req.url ?? '';
+    if (u === '/' || u === '') {
+      next();
+      return;
+    }
+    const pathOnly = u.split('?')[0] ?? '';
+    if (pathOnly !== '/' && !pathOnly.startsWith('/api')) {
+      req.url = '/api' + (u.startsWith('/') ? u : `/${u}`);
+    }
+    next();
+  });
+
   mountApiRoutes(app);
   mountErrorHandler(app);
 
