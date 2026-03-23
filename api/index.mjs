@@ -541,7 +541,6 @@ authRouter.get(
 
 // server/routes/admin.ts
 import crypto4 from "crypto";
-import { Readable as Readable2 } from "stream";
 import { Router as Router3 } from "express";
 
 // server/services/driveUploads.ts
@@ -614,13 +613,6 @@ async function deleteDriveFileIfPresent(drive, fileId) {
     console.error(`Failed to delete Drive file ${fileId}`, error);
   }
 }
-
-// server/utils/upload.ts
-import multer from "multer";
-var upload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 120 * 1024 * 1024 }
-});
 
 // server/routes/admin.ts
 var adminRouter = Router3();
@@ -733,85 +725,10 @@ adminRouter.post(
 adminRouter.post(
   "/admin/upload",
   requireAdmin,
-  upload.fields([
-    { name: "audio", maxCount: 1 },
-    { name: "image", maxCount: 1 }
-  ]),
-  asyncHandler(async (req, res) => {
-    if (isVercelRuntime()) {
-      res.status(410).json({
-        error: "Use browser-direct Drive upload and /api/admin/upload/complete in Vercel production."
-      });
-      return;
-    }
-    const files = req.files;
-    const audio = files?.audio?.[0];
-    const image = files?.image?.[0];
-    if (!audio || !image) {
-      res.status(400).json({ error: "audio and image files are required" });
-      return;
-    }
-    const title = String(req.body.title ?? "").trim();
-    const artist = String(req.body.artist ?? "").trim();
-    if (!title || !artist) {
-      res.status(400).json({ error: "title and artist are required" });
-      return;
-    }
-    const description = String(req.body.description ?? "").trim();
-    const tagsRaw = String(req.body.tags ?? "").trim();
-    const tags = tagsRaw ? tagsRaw.split(",").map((t) => t.trim()).filter(Boolean) : [];
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-    const audioName = `audio_${Date.now()}_${audio.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const imageName = `cover_${Date.now()}_${image.originalname.replace(/[^a-zA-Z0-9._-]/g, "_")}`;
-    const audioStream = Readable2.from(audio.buffer);
-    const imageStream = Readable2.from(image.buffer);
-    const [audioRes, imageRes] = await Promise.all([
-      drive.files.create({
-        requestBody: {
-          name: audioName,
-          parents: [folderId]
-        },
-        media: {
-          mimeType: audio.mimetype || "audio/mpeg",
-          body: audioStream
-        },
-        fields: "id",
-        supportsAllDrives: true
-      }),
-      drive.files.create({
-        requestBody: {
-          name: imageName,
-          parents: [folderId]
-        },
-        media: {
-          mimeType: image.mimetype || "image/jpeg",
-          body: imageStream
-        },
-        fields: "id",
-        supportsAllDrives: true
-      })
-    ]);
-    const audioFileId = audioRes.data.id;
-    const coverFileId = imageRes.data.id;
-    if (!audioFileId || !coverFileId) {
-      res.status(500).json({ error: "Drive did not return file ids" });
-      return;
-    }
-    const track = {
-      id: crypto4.randomUUID(),
-      title,
-      artist,
-      description,
-      createdAt: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
-      tags,
-      playable: true,
-      order: -1,
-      driveAudioFileId: audioFileId,
-      driveCoverFileId: coverFileId
-    };
-    await addTrackAndSave(drive, folderId, track);
-    res.json({ track: toPublicTrack(track) });
+  asyncHandler(async (_req, res) => {
+    res.status(410).json({
+      error: "Legacy multipart upload is retired. Use browser-direct Google Drive upload from /admin and finish with /api/admin/upload/complete."
+    });
   })
 );
 

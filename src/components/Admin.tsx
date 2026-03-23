@@ -52,7 +52,7 @@ declare global {
             scope: string;
             prompt?: string;
             callback: (response: { access_token?: string; error?: string; error_description?: string }) => void;
-            error_callback?: () => void;
+            error_callback?: (error: { type?: string }) => void;
           }) => {
             requestAccessToken: () => void;
           };
@@ -63,6 +63,7 @@ declare global {
 }
 
 class UploadSessionExpiredError extends Error {}
+class GoogleAuthPopupError extends Error {}
 
 let gisScriptPromise: Promise<void> | null = null;
 
@@ -114,6 +115,29 @@ function parseErrorMessage(raw: string): string {
     // no-op
   }
   return raw;
+}
+
+function explainUploadError(message: string): string {
+  const lower = message.toLowerCase();
+  if (lower.includes('google authorization popup was blocked or closed')) {
+    return (
+      'Google 認証ポップアップが閉じられたか、OAuth 設定が一致していません。Google Cloud Console の OAuth クライアントで ' +
+      'Authorized JavaScript origins に本番URL、Authorized redirect URIs に /api/auth/google/callback を追加してください。'
+    );
+  }
+  if (lower.includes('origin_mismatch') || lower.includes('redirect_uri_mismatch')) {
+    return (
+      'Google OAuth 設定が一致していません。Authorized JavaScript origins に本番URL、Authorized redirect URIs に ' +
+      '/api/auth/google/callback を追加してください。'
+    );
+  }
+  if (lower.includes('access_denied')) {
+    return 'Google Drive へのアクセスが拒否されました。権限を許可して、同じ Google アカウントで再実行してください。';
+  }
+  if (lower.includes('google drive upload request failed')) {
+    return 'Google Drive へのアップロード通信に失敗しました。回線状態を確認して、もう一度アップロードしてください。';
+  }
+  return message;
 }
 
 function formatBytes(bytes: number): string {
@@ -191,7 +215,13 @@ async function requestDriveAccessToken(clientId: string): Promise<string> {
         }
         resolve(response.access_token);
       },
-      error_callback: () => reject(new Error('Google authorization popup was blocked or closed.')),
+      error_callback: (error) => {
+        if (error?.type === 'popup_closed' || error?.type === 'popup_failed_to_open') {
+          reject(new GoogleAuthPopupError('Google authorization popup was blocked or closed.'));
+          return;
+        }
+        reject(new Error(`Google authorization failed (${error?.type ?? 'unknown'}).`));
+      },
     });
 
     tokenClient.requestAccessToken();
@@ -548,12 +578,14 @@ export const Admin: React.FC = () => {
       const msg = parseErrorMessage(raw);
       if (error instanceof UploadSessionExpiredError) {
         setMessage('エラー: Drive のアップロードセッションが失効しました。もう一度アップロードしてください。');
+      } else if (error instanceof GoogleAuthPopupError) {
+        setMessage(`エラー: ${explainUploadError(msg)}`);
       } else if (msg.includes('Unauthorized') || msg.includes('401')) {
         setMessage(
           'エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。'
         );
       } else {
-        setMessage(`エラー: ${msg}`);
+        setMessage(`エラー: ${explainUploadError(msg)}`);
       }
       setUploadProgress(0);
     } finally {

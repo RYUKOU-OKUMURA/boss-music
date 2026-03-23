@@ -36,6 +36,7 @@ npm run dev:all
 1. `/admin` を開く
 2. **Drive と連携する**で OAuth 完了（別タブ）。`SESSION_SECRET` があると管理者用 Cookie が付く
 3. 曲をアップロード（Cookie または `ADMIN_SECRET` / `VITE_ADMIN_SECRET` で認証）。本番の正式サポートは **MP3 最大 150MB**、画像は **JPG / PNG / WEBP 最大 10MB**。
+4. Vercel 本番では、アップロード時に **サーバー連携済みと同じ Google アカウント** を選ぶ
 
 カタログファイル ID は、Redis 未使用時は `data/catalog-file-id.txt` に保存されます（`.gitignore` 済み）。Vercel（パターン B）では **Redis** に保存します。
 
@@ -64,11 +65,19 @@ NODE_ENV=production npm start
 ### パターン B（本リポジトリの既定: 静的 + Serverless API を同一プロジェクト）
 
 - **構成**: [`api/index.ts`](api/index.ts) は [`createApiApp()`](server/app.ts) を **そのまま default export**（[Vercel の Express 向け公式](https://vercel.com/docs/frameworks/backend/express)）。`serverless-http` は使わない（Lambda 向けで Vercel では 500 になり得る）。[`vercel.json`](vercel.json) に `includeFiles: server/**` を付け、関数バンドルにサーバー側コードを含めます。`rewrites` で `/api/*` をこの関数へ流します。フロントは `npm run build` の `dist/`、SPA は `index.html` への rewrite。
-- **永続化（本番必須）**: Serverless ではローカルファイルが共有されないため、**Vercel の Storage で Redis（Upstash）** をプロジェクトに接続し、環境変数 **`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`** が入るようにします（ダッシュボードの Integrations から追加）。これによりリフレッシュトークン（暗号化済み）・OAuth state・カタログ fileId が Redis に保存されます。**Vercel 本番で Redis 未設定の場合、Drive 連携と upload init は明示エラーになります。**
+- **永続化（本番必須）**: Serverless ではローカルファイルが共有されないため、**Vercel の Storage で Redis（Upstash）** をプロジェクトに接続し、環境変数 **`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`** が入るようにします（ダッシュボードの Integrations から追加）。これによりリフレッシュトークン（暗号化済み）・OAuth state・カタログ fileId が Redis に保存されます。**Vercel 本番で Redis 未設定の場合、Drive 連携と `/api/admin/google-upload-config` は明示エラーになります。**
 - **OAuth**: 本番の `OAUTH_REDIRECT_URI` を `https://<あなたのドメイン>/api/auth/google/callback` にし、Google Cloud の承認済みリダイレクト URI と一致させます。
 - **アップロード方式**: `/api/admin/google-upload-config` で Google クライアント設定と連携済みアカウント情報を返し、管理画面は Google Identity Services で同じ Google アカウントを選ばせたうえで Drive API に直接アップロードします。`/api/admin/upload/complete` はアップロード済み fileId を検証して catalog に反映します。旧 `/api/admin/upload` はローカル専用です。
 - **制約**: Vercel Function に大きい MP3 を直接送る構成ではなく、Drive 直送に切り替えています。アップロード再開は Google Drive の resumable upload に依存します。
 - **フロント**: 同一オリジンなので **`VITE_API_BASE_URL` は未設定のまま**でよい（相対 `/api`）。
+
+### 本番チェックリスト
+
+1. Vercel の Environment Variables に `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `OAUTH_REDIRECT_URI` / `GOOGLE_DRIVE_FOLDER_ID` / `TOKEN_ENCRYPTION_KEY` / `SESSION_SECRET` / `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を設定
+2. Google Cloud Console の OAuth クライアントで `Authorized JavaScript origins` に `https://<本番ドメイン>` を追加
+3. 同じ OAuth クライアントの `Authorized redirect URIs` に `https://<本番ドメイン>/api/auth/google/callback` を追加
+4. `/api/admin/drive-status` で `storage: "redis"` と `configOk: true` を確認
+5. `/admin` から同じ Google アカウントで MP3 と画像をアップロードして再生確認
 
 ### パターン A（API だけ別ホストに置く場合）
 
