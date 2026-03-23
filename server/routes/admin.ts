@@ -4,6 +4,13 @@ import { Router } from 'express';
 import { loadRefreshToken } from '../services/tokenStore';
 import { getDrive, getDriveFolderId } from '../services/driveClient';
 import { addTrackAndSave, type TrackRow } from '../services/catalog';
+import {
+  assertUploadFileInput,
+  deleteDriveFileIfPresent,
+  startDriveResumableUpload,
+  verifyDriveUpload,
+} from '../services/driveUploads';
+import { getPersistenceStatus, isVercelRuntime } from '../services/runtimeEnv';
 import { requireAdmin } from '../middleware/adminAuth';
 import { upload } from '../utils/upload';
 import { asyncHandler } from '../utils/asyncHandler';
@@ -11,11 +18,149 @@ import { toPublicTrack } from '../utils/trackPublic';
 
 export const adminRouter = Router();
 
+interface UploadInitBody {
+  audio?: { name?: string; size?: number; type?: string };
+  image?: { name?: string; size?: number; type?: string };
+}
+
+interface UploadCompleteBody {
+  title?: string;
+  artist?: string;
+  description?: string;
+  tags?: string[] | string;
+  audioFileId?: string;
+  imageFileId?: string;
+}
+
+function splitTags(input: string[] | string | undefined): string[] {
+  if (Array.isArray(input)) {
+    return input.map((tag) => String(tag).trim()).filter(Boolean);
+  }
+  const raw = String(input ?? '').trim();
+  if (!raw) return [];
+  return raw
+    .split(',')
+    .map((tag) => tag.trim())
+    .filter(Boolean);
+}
+
+function isValidationError(error: unknown): error is Error & { code?: string } {
+  return typeof error === 'object' && error !== null && 'code' in error;
+}
+
 adminRouter.get(
   '/admin/drive-status',
   asyncHandler(async (_req, res) => {
+    const persistence = getPersistenceStatus();
+    if (!persistence.configOk) {
+      res.json({
+        connected: false,
+        storage: persistence.storage,
+        configOk: false,
+        reason: persistence.reason,
+      });
+      return;
+    }
+
     const rt = await loadRefreshToken();
-    res.json({ connected: Boolean(rt) });
+    res.json({
+      connected: Boolean(rt),
+      storage: persistence.storage,
+      configOk: true,
+    });
+  })
+);
+
+adminRouter.post(
+  '/admin/upload/init',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as UploadInitBody;
+    const folderId = getDriveFolderId();
+
+    const audio = assertUploadFileInput('audio', {
+      name: String(body.audio?.name ?? ''),
+      size: Number(body.audio?.size),
+      type: String(body.audio?.type ?? ''),
+    });
+    const image = assertUploadFileInput('image', {
+      name: String(body.image?.name ?? ''),
+      size: Number(body.image?.size),
+      type: String(body.image?.type ?? ''),
+    });
+
+    const [audioUpload, imageUpload] = await Promise.all([
+      startDriveResumableUpload('audio', audio, folderId),
+      startDriveResumableUpload('image', image, folderId),
+    ]);
+
+    res.json({
+      audio: audioUpload,
+      image: imageUpload,
+    });
+  })
+);
+
+adminRouter.post(
+  '/admin/upload/complete',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as UploadCompleteBody;
+    const title = String(body.title ?? '').trim();
+    const artist = String(body.artist ?? '').trim();
+    const description = String(body.description ?? '').trim();
+    const audioFileId = String(body.audioFileId ?? '').trim();
+    const imageFileId = String(body.imageFileId ?? '').trim();
+    const tags = splitTags(body.tags);
+
+    if (!title || !artist) {
+      res.status(400).json({ error: 'title and artist are required' });
+      return;
+    }
+    if (!audioFileId || !imageFileId) {
+      res.status(400).json({ error: 'audioFileId and imageFileId are required' });
+      return;
+    }
+
+    const drive = await getDrive();
+    const folderId = getDriveFolderId();
+    let verifiedAudio: { fileId: string } | null = null;
+    let verifiedImage: { fileId: string } | null = null;
+
+    try {
+      verifiedAudio = await verifyDriveUpload(drive, audioFileId, 'audio', folderId);
+      verifiedImage = await verifyDriveUpload(drive, imageFileId, 'image', folderId);
+
+      const track: TrackRow = {
+        id: crypto.randomUUID(),
+        title,
+        artist,
+        description,
+        createdAt: new Date().toISOString().split('T')[0],
+        tags,
+        playable: true,
+        order: -1,
+        driveAudioFileId: verifiedAudio.fileId,
+        driveCoverFileId: verifiedImage.fileId,
+      };
+
+      await addTrackAndSave(drive, folderId, track);
+      res.json({ track: toPublicTrack(track) });
+    } catch (error) {
+      if (verifiedAudio) {
+        await deleteDriveFileIfPresent(drive, verifiedAudio.fileId);
+      }
+      if (verifiedImage) {
+        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
+      }
+
+      const err = error as Error & { code?: string };
+      if (isValidationError(error) && err.code === 'UPLOAD_VALIDATION_FAILED') {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
   })
 );
 
@@ -27,6 +172,13 @@ adminRouter.post(
     { name: 'image', maxCount: 1 },
   ]),
   asyncHandler(async (req, res) => {
+    if (isVercelRuntime()) {
+      res.status(410).json({
+        error: 'Use /api/admin/upload/init and /api/admin/upload/complete in Vercel production.',
+      });
+      return;
+    }
+
     const files = req.files as { audio?: Express.Multer.File[]; image?: Express.Multer.File[] };
     const audio = files?.audio?.[0];
     const image = files?.image?.[0];

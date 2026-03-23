@@ -21,8 +21,8 @@ tracksRouter.get(
       });
     } catch (e: unknown) {
       const err = e as Error & { code?: string };
-      if (err.code === 'NOT_CONNECTED') {
-        res.status(503).json({ error: 'Drive not configured', tracks: [] });
+      if (err.code === 'NOT_CONNECTED' || err.code === 'PERSISTENT_STORAGE_REQUIRED') {
+        res.status(503).json({ error: err.message, tracks: [] });
         return;
       }
       throw e;

@@ -4,6 +4,7 @@ import { Readable } from 'stream';
 import type { drive_v3 } from 'googleapis';
 import { KV_CATALOG_FILE_ID } from './kvKeys';
 import { getRedis, isRedisConfigured } from './redisStore';
+import { assertPersistentStorageConfigured } from './runtimeEnv';
 
 export type DriveClient = drive_v3.Drive;
 
@@ -50,6 +51,7 @@ async function readStoredCatalogFileId(): Promise<string | null> {
       return null;
     }
   }
+  assertPersistentStorageConfigured();
   try {
     const raw = await fs.readFile(catalogIdPath(), 'utf8');
     return raw.trim() || null;
@@ -63,6 +65,7 @@ async function writeStoredCatalogFileId(id: string): Promise<void> {
     await getRedis().set(KV_CATALOG_FILE_ID, id);
     return;
   }
+  assertPersistentStorageConfigured();
   const p = catalogIdPath();
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, id, 'utf8');

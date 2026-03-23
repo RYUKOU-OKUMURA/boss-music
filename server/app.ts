@@ -22,7 +22,16 @@ function mountErrorHandler(app: Application) {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   app.use((err: Error, _req: Request, res: Response, _next: NextFunction) => {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    const typed = err as Error & { code?: string };
+    const status =
+      typed.code === 'UPLOAD_VALIDATION_FAILED'
+        ? 400
+        : typed.code === 'NOT_CONNECTED' || typed.code === 'PERSISTENT_STORAGE_REQUIRED'
+          ? 503
+          : typed.code === 'DRIVE_INIT_FAILED' || typed.code === 'DRIVE_AUTH_FAILED'
+            ? 502
+            : 500;
+    res.status(status).json({ error: err.message });
   });
 }
 

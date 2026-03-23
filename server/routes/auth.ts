@@ -46,7 +46,16 @@ authRouter.get(
         );
       return;
     }
-    await saveRefreshToken(tokens.refresh_token);
+    try {
+      await saveRefreshToken(tokens.refresh_token);
+    } catch (error) {
+      const err = error as Error & { code?: string };
+      if (err.code === 'PERSISTENT_STORAGE_REQUIRED') {
+        res.status(503).send(err.message);
+        return;
+      }
+      throw error;
+    }
 
     const sessionTok = createAdminSessionToken();
     if (sessionTok) {

@@ -36,6 +36,31 @@ function getRedis() {
   return client;
 }
 
+// server/services/runtimeEnv.ts
+function isVercelRuntime() {
+  return process.env.VERCEL === "1" || Boolean(process.env.VERCEL_ENV?.trim());
+}
+function getPersistenceStatus() {
+  if (isRedisConfigured()) {
+    return { storage: "redis", configOk: true };
+  }
+  if (isVercelRuntime()) {
+    return {
+      storage: "local",
+      configOk: false,
+      reason: "Vercel \u672C\u756A\u3067\u306F Upstash Redis \u306E\u8A2D\u5B9A\u304C\u5FC5\u9808\u3067\u3059\u3002"
+    };
+  }
+  return { storage: "local", configOk: true };
+}
+function assertPersistentStorageConfigured() {
+  const status = getPersistenceStatus();
+  if (status.configOk) return status;
+  const err = new Error(status.reason || "Persistent storage is required");
+  err.code = "PERSISTENT_STORAGE_REQUIRED";
+  throw err;
+}
+
 // server/services/tokenStore.ts
 var ALGO = "aes-256-gcm";
 function getKey() {
@@ -72,6 +97,7 @@ async function saveRefreshToken(refreshToken) {
     await getRedis().set(KV_REFRESH_TOKEN, enc);
     return;
   }
+  assertPersistentStorageConfigured();
   const p = tokenPath();
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, enc, "utf8");
@@ -87,6 +113,7 @@ async function loadRefreshToken() {
       return null;
     }
   }
+  assertPersistentStorageConfigured();
   try {
     const enc = await fs.readFile(tokenPath(), "utf8");
     const json = JSON.parse(decrypt(enc));
@@ -152,6 +179,7 @@ async function readStoredCatalogFileId() {
       return null;
     }
   }
+  assertPersistentStorageConfigured();
   try {
     const raw = await fs2.readFile(catalogIdPath(), "utf8");
     return raw.trim() || null;
@@ -164,6 +192,7 @@ async function writeStoredCatalogFileId(id) {
     await getRedis().set(KV_CATALOG_FILE_ID, id);
     return;
   }
+  assertPersistentStorageConfigured();
   const p = catalogIdPath();
   await fs2.mkdir(path2.dirname(p), { recursive: true });
   await fs2.writeFile(p, id, "utf8");
@@ -293,8 +322,8 @@ tracksRouter.get(
       });
     } catch (e) {
       const err = e;
-      if (err.code === "NOT_CONNECTED") {
-        res.status(503).json({ error: "Drive not configured", tracks: [] });
+      if (err.code === "NOT_CONNECTED" || err.code === "PERSISTENT_STORAGE_REQUIRED") {
+        res.status(503).json({ error: err.message, tracks: [] });
         return;
       }
       throw e;
@@ -474,7 +503,16 @@ authRouter.get(
       );
       return;
     }
-    await saveRefreshToken(tokens.refresh_token);
+    try {
+      await saveRefreshToken(tokens.refresh_token);
+    } catch (error) {
+      const err = error;
+      if (err.code === "PERSISTENT_STORAGE_REQUIRED") {
+        res.status(503).send(err.message);
+        return;
+      }
+      throw error;
+    }
     const sessionTok = createAdminSessionToken();
     if (sessionTok) {
       res.cookie(adminCookieName, sessionTok, {
@@ -496,6 +534,157 @@ import crypto4 from "crypto";
 import { Readable as Readable2 } from "stream";
 import { Router as Router3 } from "express";
 
+// server/services/driveUploads.ts
+import { google as google2 } from "googleapis";
+var MB = 1024 * 1024;
+var MAX_AUDIO_BYTES = 150 * MB;
+var MAX_IMAGE_BYTES = 10 * MB;
+var AUDIO_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
+var AUDIO_MIME_TYPES = /* @__PURE__ */ new Set(["audio/mpeg", "audio/mp3"]);
+var IMAGE_MIME_TYPES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp"]);
+function getUploadRules(kind) {
+  return kind === "audio" ? {
+    maxBytes: MAX_AUDIO_BYTES,
+    mimeTypes: AUDIO_MIME_TYPES,
+    prefix: "audio",
+    label: "MP3"
+  } : {
+    maxBytes: MAX_IMAGE_BYTES,
+    mimeTypes: IMAGE_MIME_TYPES,
+    prefix: "cover",
+    label: "JPG / PNG / WEBP"
+  };
+}
+function makeUploadError(message, code = "UPLOAD_VALIDATION_FAILED") {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+function sanitizeFileName(name) {
+  const trimmed = name.trim() || "upload.bin";
+  return trimmed.replace(/[^a-zA-Z0-9._-]/g, "_");
+}
+function toErrorMessage(text) {
+  const trimmed = text.trim();
+  return trimmed ? trimmed.slice(0, 500) : "unknown error";
+}
+function parseNumericSize(value) {
+  if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
+  if (typeof value !== "string") return NaN;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : NaN;
+}
+function assertUploadFileInput(kind, input) {
+  const rules = getUploadRules(kind);
+  const name = String(input.name ?? "").trim();
+  const size = Number(input.size);
+  const type = String(input.type ?? "").trim().toLowerCase();
+  if (!name) throw makeUploadError(`${rules.label} \u306E\u30D5\u30A1\u30A4\u30EB\u540D\u304C\u5FC5\u8981\u3067\u3059\u3002`);
+  if (!Number.isFinite(size) || size <= 0) {
+    throw makeUploadError(`${rules.label} \u306E\u30D5\u30A1\u30A4\u30EB\u30B5\u30A4\u30BA\u304C\u4E0D\u6B63\u3067\u3059\u3002`);
+  }
+  if (size > rules.maxBytes) {
+    throw makeUploadError(
+      `${rules.label} \u306F ${Math.round(rules.maxBytes / MB)}MB \u4EE5\u4E0B\u306B\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
+    );
+  }
+  if (!rules.mimeTypes.has(type)) {
+    throw makeUploadError(`${rules.label} \u306E MIME type \u304C\u4E0D\u6B63\u3067\u3059\u3002`);
+  }
+  return { name, size, type };
+}
+async function getDriveAccessToken() {
+  const oauth2 = await getOAuth2ClientForDrive();
+  const accessToken = await oauth2.getAccessToken();
+  const token = typeof accessToken === "string" ? accessToken : accessToken?.token;
+  if (!token) {
+    throw makeUploadError("Drive access token \u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002", "DRIVE_AUTH_FAILED");
+  }
+  return token;
+}
+async function startDriveResumableUpload(kind, input, folderId) {
+  const file = assertUploadFileInput(kind, input);
+  const oauth2 = await getOAuth2ClientForDrive();
+  const drive = google2.drive({ version: "v3", auth: oauth2 });
+  const ids = await drive.files.generateIds({ count: 1, space: "drive", type: "files" });
+  const fileId = ids.data.ids?.[0];
+  if (!fileId) {
+    throw makeUploadError("Drive fileId \u3092\u751F\u6210\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002", "DRIVE_INIT_FAILED");
+  }
+  const token = await getDriveAccessToken();
+  const fileName = `${getUploadRules(kind).prefix}_${Date.now()}_${sanitizeFileName(file.name)}`;
+  const response = await fetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,mimeType,size,parents",
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json; charset=UTF-8",
+        "X-Upload-Content-Type": file.type,
+        "X-Upload-Content-Length": String(file.size)
+      },
+      body: JSON.stringify({
+        id: fileId,
+        name: fileName,
+        parents: [folderId],
+        mimeType: file.type
+      })
+    }
+  );
+  if (!response.ok) {
+    const text = await response.text();
+    throw makeUploadError(
+      `Drive upload session \u306E\u4F5C\u6210\u306B\u5931\u6557\u3057\u307E\u3057\u305F: ${toErrorMessage(text)}`,
+      "DRIVE_INIT_FAILED"
+    );
+  }
+  const sessionUrl = response.headers.get("location");
+  if (!sessionUrl) {
+    throw makeUploadError("Drive upload session URL \u304C\u8FD4\u3055\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002", "DRIVE_INIT_FAILED");
+  }
+  return { fileId, sessionUrl, fileName };
+}
+async function verifyDriveUpload(drive, fileId, kind, folderId) {
+  const response = await drive.files.get({
+    fileId,
+    fields: "id,name,mimeType,size,parents,trashed",
+    supportsAllDrives: true
+  });
+  const data = response.data;
+  const parents = Array.isArray(data.parents) ? data.parents.filter(Boolean) : [];
+  const mimeType = String(data.mimeType ?? "").trim().toLowerCase();
+  const size = parseNumericSize(data.size);
+  const rules = getUploadRules(kind);
+  if (!data.id) throw makeUploadError("Drive \u4E0A\u306B\u30A2\u30C3\u30D7\u30ED\u30FC\u30C9\u6E08\u307F\u30D5\u30A1\u30A4\u30EB\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002");
+  if (data.trashed) throw makeUploadError("Drive \u4E0A\u306E\u30D5\u30A1\u30A4\u30EB\u304C\u30B4\u30DF\u7BB1\u306B\u3042\u308A\u307E\u3059\u3002");
+  if (!parents.includes(folderId)) {
+    throw makeUploadError("Drive \u4E0A\u306E\u30D5\u30A1\u30A4\u30EB\u4FDD\u5B58\u5148\u304C\u60F3\u5B9A\u30D5\u30A9\u30EB\u30C0\u3067\u306F\u3042\u308A\u307E\u305B\u3093\u3002");
+  }
+  if (!rules.mimeTypes.has(mimeType)) {
+    throw makeUploadError(`${rules.label} \u306E MIME type \u304C\u4E0D\u6B63\u3067\u3059\u3002`);
+  }
+  if (!Number.isFinite(size) || size <= 0) {
+    throw makeUploadError(`${rules.label} \u306E\u30B5\u30A4\u30BA\u3092\u78BA\u8A8D\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002`);
+  }
+  if (size > rules.maxBytes) {
+    throw makeUploadError(`${rules.label} \u306F ${Math.round(rules.maxBytes / MB)}MB \u4EE5\u4E0B\u306B\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
+  }
+  return {
+    fileId: data.id,
+    name: String(data.name ?? ""),
+    mimeType,
+    size,
+    parents
+  };
+}
+async function deleteDriveFileIfPresent(drive, fileId) {
+  try {
+    await drive.files.delete({ fileId, supportsAllDrives: true });
+  } catch (error) {
+    console.error(`Failed to delete Drive file ${fileId}`, error);
+  }
+}
+
 // server/utils/upload.ts
 import multer from "multer";
 var upload = multer({
@@ -505,11 +694,118 @@ var upload = multer({
 
 // server/routes/admin.ts
 var adminRouter = Router3();
+function splitTags(input) {
+  if (Array.isArray(input)) {
+    return input.map((tag) => String(tag).trim()).filter(Boolean);
+  }
+  const raw = String(input ?? "").trim();
+  if (!raw) return [];
+  return raw.split(",").map((tag) => tag.trim()).filter(Boolean);
+}
+function isValidationError(error) {
+  return typeof error === "object" && error !== null && "code" in error;
+}
 adminRouter.get(
   "/admin/drive-status",
   asyncHandler(async (_req, res) => {
+    const persistence = getPersistenceStatus();
+    if (!persistence.configOk) {
+      res.json({
+        connected: false,
+        storage: persistence.storage,
+        configOk: false,
+        reason: persistence.reason
+      });
+      return;
+    }
     const rt = await loadRefreshToken();
-    res.json({ connected: Boolean(rt) });
+    res.json({
+      connected: Boolean(rt),
+      storage: persistence.storage,
+      configOk: true
+    });
+  })
+);
+adminRouter.post(
+  "/admin/upload/init",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = req.body ?? {};
+    const folderId = getDriveFolderId();
+    const audio = assertUploadFileInput("audio", {
+      name: String(body.audio?.name ?? ""),
+      size: Number(body.audio?.size),
+      type: String(body.audio?.type ?? "")
+    });
+    const image = assertUploadFileInput("image", {
+      name: String(body.image?.name ?? ""),
+      size: Number(body.image?.size),
+      type: String(body.image?.type ?? "")
+    });
+    const [audioUpload, imageUpload] = await Promise.all([
+      startDriveResumableUpload("audio", audio, folderId),
+      startDriveResumableUpload("image", image, folderId)
+    ]);
+    res.json({
+      audio: audioUpload,
+      image: imageUpload
+    });
+  })
+);
+adminRouter.post(
+  "/admin/upload/complete",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = req.body ?? {};
+    const title = String(body.title ?? "").trim();
+    const artist = String(body.artist ?? "").trim();
+    const description = String(body.description ?? "").trim();
+    const audioFileId = String(body.audioFileId ?? "").trim();
+    const imageFileId = String(body.imageFileId ?? "").trim();
+    const tags = splitTags(body.tags);
+    if (!title || !artist) {
+      res.status(400).json({ error: "title and artist are required" });
+      return;
+    }
+    if (!audioFileId || !imageFileId) {
+      res.status(400).json({ error: "audioFileId and imageFileId are required" });
+      return;
+    }
+    const drive = await getDrive();
+    const folderId = getDriveFolderId();
+    let verifiedAudio = null;
+    let verifiedImage = null;
+    try {
+      verifiedAudio = await verifyDriveUpload(drive, audioFileId, "audio", folderId);
+      verifiedImage = await verifyDriveUpload(drive, imageFileId, "image", folderId);
+      const track = {
+        id: crypto4.randomUUID(),
+        title,
+        artist,
+        description,
+        createdAt: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
+        tags,
+        playable: true,
+        order: -1,
+        driveAudioFileId: verifiedAudio.fileId,
+        driveCoverFileId: verifiedImage.fileId
+      };
+      await addTrackAndSave(drive, folderId, track);
+      res.json({ track: toPublicTrack(track) });
+    } catch (error) {
+      if (verifiedAudio) {
+        await deleteDriveFileIfPresent(drive, verifiedAudio.fileId);
+      }
+      if (verifiedImage) {
+        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
+      }
+      const err = error;
+      if (isValidationError(error) && err.code === "UPLOAD_VALIDATION_FAILED") {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
   })
 );
 adminRouter.post(
@@ -520,6 +816,12 @@ adminRouter.post(
     { name: "image", maxCount: 1 }
   ]),
   asyncHandler(async (req, res) => {
+    if (isVercelRuntime()) {
+      res.status(410).json({
+        error: "Use /api/admin/upload/init and /api/admin/upload/complete in Vercel production."
+      });
+      return;
+    }
     const files = req.files;
     const audio = files?.audio?.[0];
     const image = files?.image?.[0];
@@ -593,7 +895,7 @@ adminRouter.post(
 
 // server/routes/media.ts
 import { Router as Router4 } from "express";
-import { google as google2 } from "googleapis";
+import { google as google3 } from "googleapis";
 
 // server/utils/mediaHeaders.ts
 function applyGoogleHeaders(res, headers, status) {
@@ -622,7 +924,7 @@ mediaRouter.get(
     const range = req.headers.range;
     try {
       const auth = await getOAuth2ClientForDrive();
-      const drive = google2.drive({ version: "v3", auth });
+      const drive = google3.drive({ version: "v3", auth });
       const gRes = await drive.files.get(
         { fileId, alt: "media", supportsAllDrives: true },
         {
@@ -656,7 +958,7 @@ mediaRouter.get(
     const range = req.headers.range;
     try {
       const auth = await getOAuth2ClientForDrive();
-      const drive = google2.drive({ version: "v3", auth });
+      const drive = google3.drive({ version: "v3", auth });
       const gRes = await drive.files.get(
         { fileId, alt: "media", supportsAllDrives: true },
         {
@@ -703,7 +1005,9 @@ function mountApiRoutes(app2) {
 function mountErrorHandler(app2) {
   app2.use((err, _req, res, _next) => {
     console.error(err);
-    res.status(500).json({ error: err.message });
+    const typed = err;
+    const status = typed.code === "UPLOAD_VALIDATION_FAILED" ? 400 : typed.code === "NOT_CONNECTED" || typed.code === "PERSISTENT_STORAGE_REQUIRED" ? 503 : typed.code === "DRIVE_INIT_FAILED" || typed.code === "DRIVE_AUTH_FAILED" ? 502 : 500;
+    res.status(status).json({ error: err.message });
   });
 }
 function createApiApp() {
