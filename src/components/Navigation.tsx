@@ -9,8 +9,15 @@ export const Navigation: React.FC = () => {
   const isHome = location.pathname === '/';
   const searchQuery = searchParams.get('q') ?? '';
 
-  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const value = e.target.value;
+  /** IME 変換中は URL 更新で制御 value が上書きされないよう、表示はローカル state に任せる */
+  const [inputValue, setInputValue] = React.useState(searchQuery);
+  const isComposingRef = React.useRef(false);
+
+  React.useEffect(() => {
+    setInputValue(searchQuery);
+  }, [searchQuery]);
+
+  const applySearchToUrl = (value: string) => {
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -23,6 +30,25 @@ export const Navigation: React.FC = () => {
       },
       { replace: true }
     );
+  };
+
+  const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const value = e.target.value;
+    setInputValue(value);
+    if (!isComposingRef.current) {
+      applySearchToUrl(value);
+    }
+  };
+
+  const handleCompositionStart = () => {
+    isComposingRef.current = true;
+  };
+
+  const handleCompositionEnd = (e: React.CompositionEvent<HTMLInputElement>) => {
+    isComposingRef.current = false;
+    const value = e.currentTarget.value;
+    setInputValue(value);
+    applySearchToUrl(value);
   };
 
   return (
@@ -58,8 +84,10 @@ export const Navigation: React.FC = () => {
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-zen-mist/40" />
           <input
             type="search"
-            value={searchQuery}
+            value={inputValue}
             onChange={handleSearchChange}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
             placeholder="曲を検索..."
             autoComplete="off"
             className="bg-surface border border-white/5 rounded-full py-1.5 pl-10 pr-4 text-sm text-zen-mist placeholder-zen-mist/40 focus:outline-none focus:border-neon-cyan/50 focus:ring-1 focus:ring-neon-cyan/50 transition-all w-64"
