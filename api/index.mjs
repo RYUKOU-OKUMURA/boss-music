@@ -289,6 +289,38 @@ async function addTrackAndSave(drive, folderId, track) {
   await writeCatalog(drive, fileId, catalog);
   return catalog;
 }
+function makeTrackNotFoundError() {
+  const err = new Error("Track not found");
+  err.code = "TRACK_NOT_FOUND";
+  return err;
+}
+async function removeTrackById(drive, folderId, id) {
+  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const idx = catalog.tracks.findIndex((t) => t.id === id);
+  if (idx === -1) {
+    throw makeTrackNotFoundError();
+  }
+  const removed = catalog.tracks[idx];
+  catalog.tracks.splice(idx, 1);
+  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  await writeCatalog(drive, fileId, catalog);
+  return { catalog, removed };
+}
+async function updateTrackCoverById(drive, folderId, id, driveCoverFileId) {
+  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const track = catalog.tracks.find((t) => t.id === id);
+  if (!track) {
+    throw makeTrackNotFoundError();
+  }
+  if (driveCoverFileId) {
+    track.driveCoverFileId = driveCoverFileId;
+  } else {
+    delete track.driveCoverFileId;
+  }
+  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  await writeCatalog(drive, fileId, catalog);
+  return { catalog, track };
+}
 
 // server/utils/asyncHandler.ts
 function asyncHandler(fn) {
@@ -628,6 +660,9 @@ function splitTags(input) {
 function isValidationError(error) {
   return typeof error === "object" && error !== null && "code" in error;
 }
+function isTrackNotFound(error) {
+  return isValidationError(error) && error.code === "TRACK_NOT_FOUND";
+}
 adminRouter.get(
   "/admin/drive-status",
   asyncHandler(async (_req, res) => {
@@ -731,6 +766,144 @@ adminRouter.post(
   asyncHandler(async (_req, res) => {
     res.status(410).json({
       error: "Legacy multipart upload is retired. Use browser-direct Google Drive upload from /admin and finish with /api/admin/upload/complete."
+    });
+  })
+);
+adminRouter.post(
+  "/admin/tracks/:id/cover",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? "").trim();
+    const body = req.body ?? {};
+    const imageFileId = String(body.imageFileId ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "id is required" });
+      return;
+    }
+    if (!imageFileId) {
+      res.status(400).json({ error: "imageFileId is required" });
+      return;
+    }
+    const drive = await getDrive();
+    const folderId = getDriveFolderId();
+    let verifiedImage = null;
+    try {
+      verifiedImage = await verifyDriveUpload(drive, imageFileId, "image", folderId);
+    } catch (error) {
+      const err = error;
+      if (isValidationError(error) && err.code === "UPLOAD_VALIDATION_FAILED") {
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
+    try {
+      const { catalog } = await readCatalog(drive, folderId);
+      const existing = catalog.tracks.find((t) => t.id === id);
+      if (!existing) {
+        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      const oldCoverId = existing.driveCoverFileId;
+      await updateTrackCoverById(drive, folderId, id, verifiedImage.fileId);
+      if (oldCoverId && oldCoverId !== verifiedImage.fileId) {
+        await deleteDriveFileIfPresent(drive, oldCoverId);
+      }
+      const { catalog: after } = await readCatalog(drive, folderId);
+      const updated = after.tracks.find((t) => t.id === id);
+      res.json({ track: updated ? toPublicTrack(updated) : null });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
+      throw error;
+    }
+  })
+);
+adminRouter.delete(
+  "/admin/tracks/:id/cover",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "id is required" });
+      return;
+    }
+    const drive = await getDrive();
+    const folderId = getDriveFolderId();
+    let oldCoverId;
+    try {
+      const { catalog: catalog2 } = await readCatalog(drive, folderId);
+      const existing = catalog2.tracks.find((t) => t.id === id);
+      if (!existing) {
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      oldCoverId = existing.driveCoverFileId;
+      await updateTrackCoverById(drive, folderId, id, void 0);
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      throw error;
+    }
+    if (oldCoverId) {
+      await deleteDriveFileIfPresent(drive, oldCoverId);
+    }
+    const { catalog } = await readCatalog(drive, folderId);
+    const updated = catalog.tracks.find((t) => t.id === id);
+    res.json({ track: updated ? toPublicTrack(updated) : null });
+  })
+);
+adminRouter.delete(
+  "/admin/tracks/:id",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "id is required" });
+      return;
+    }
+    const keepFiles = req.query.keepFiles === "1" || req.query.keepFiles === "true" || String(req.query.keepFiles ?? "").toLowerCase() === "yes";
+    const drive = await getDrive();
+    const folderId = getDriveFolderId();
+    let removed;
+    try {
+      const result = await removeTrackById(drive, folderId, id);
+      removed = result.removed;
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      throw error;
+    }
+    const fileDeleteErrors = [];
+    if (!keepFiles) {
+      try {
+        await drive.files.delete({ fileId: removed.driveAudioFileId, supportsAllDrives: true });
+      } catch (e) {
+        console.error("Failed to delete audio file after track removal", e);
+        fileDeleteErrors.push("audio");
+      }
+      if (removed.driveCoverFileId) {
+        try {
+          await drive.files.delete({ fileId: removed.driveCoverFileId, supportsAllDrives: true });
+        } catch (e) {
+          console.error("Failed to delete cover file after track removal", e);
+          fileDeleteErrors.push("cover");
+        }
+      }
+    }
+    res.json({
+      ok: true,
+      id: removed.id,
+      ...fileDeleteErrors.length > 0 ? { fileDeleteWarnings: fileDeleteErrors } : {}
     });
   })
 );

@@ -167,3 +167,49 @@ export async function addTrackAndSave(
   await writeCatalog(drive, fileId, catalog);
   return catalog;
 }
+
+export function makeTrackNotFoundError(): Error & { code: string } {
+  const err = new Error('Track not found') as Error & { code: string };
+  err.code = 'TRACK_NOT_FOUND';
+  return err;
+}
+
+/** Removes one track by id. Returns the removed row for Drive cleanup. */
+export async function removeTrackById(
+  drive: DriveClient,
+  folderId: string,
+  id: string
+): Promise<{ catalog: CatalogRoot; removed: TrackRow }> {
+  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const idx = catalog.tracks.findIndex((t) => t.id === id);
+  if (idx === -1) {
+    throw makeTrackNotFoundError();
+  }
+  const removed = catalog.tracks[idx];
+  catalog.tracks.splice(idx, 1);
+  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  await writeCatalog(drive, fileId, catalog);
+  return { catalog, removed };
+}
+
+/** Sets or clears cover image file id for a track. */
+export async function updateTrackCoverById(
+  drive: DriveClient,
+  folderId: string,
+  id: string,
+  driveCoverFileId: string | undefined
+): Promise<{ catalog: CatalogRoot; track: TrackRow }> {
+  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const track = catalog.tracks.find((t) => t.id === id);
+  if (!track) {
+    throw makeTrackNotFoundError();
+  }
+  if (driveCoverFileId) {
+    track.driveCoverFileId = driveCoverFileId;
+  } else {
+    delete track.driveCoverFileId;
+  }
+  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  await writeCatalog(drive, fileId, catalog);
+  return { catalog, track };
+}

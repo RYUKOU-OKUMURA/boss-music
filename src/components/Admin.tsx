@@ -1,6 +1,13 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import type { Track } from '../context/AudioContext';
-import { createAuthHeaders, explainUploadError, parseErrorMessage, postJson } from '../admin/adminHttp';
+import {
+  createAuthHeaders,
+  deleteJson,
+  explainUploadError,
+  getJson,
+  parseErrorMessage,
+  postJson,
+} from '../admin/adminHttp';
 import { DRIVE_CHUNK_BYTES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES } from '../admin/constants';
 import {
   fetchBrowserDriveUser,
@@ -30,7 +37,41 @@ export const Admin: React.FC = () => {
   const [message, setMessage] = useState('');
   const [driveStatus, setDriveStatus] = useState<DriveStatusResponse | null>(null);
 
+  const [catalogTracks, setCatalogTracks] = useState<Track[] | null>(null);
+  const [tracksLoading, setTracksLoading] = useState(true);
+  const [tracksLoadError, setTracksLoadError] = useState<string | null>(null);
+  const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+
   const viteSecret = import.meta.env.VITE_ADMIN_SECRET as string | undefined;
+
+  const authHeaders = useCallback(
+    () => createAuthHeaders(viteSecret?.trim() || adminSecret.trim() || undefined),
+    [viteSecret, adminSecret]
+  );
+
+  const refreshTracks = useCallback(async () => {
+    setTracksLoading(true);
+    setTracksLoadError(null);
+    try {
+      const data = await getJson<{ tracks: Track[] }>('/api/tracks');
+      setCatalogTracks(data.tracks);
+    } catch (e: unknown) {
+      setCatalogTracks([]);
+      setTracksLoadError(parseErrorMessage(e instanceof Error ? e.message : '読み込み失敗'));
+    } finally {
+      setTracksLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refreshTracks();
+  }, [refreshTracks]);
+
+  useEffect(() => {
+    const onCatalog = () => void refreshTracks();
+    window.addEventListener('boss-music-catalog-changed', onCatalog);
+    return () => window.removeEventListener('boss-music-catalog-changed', onCatalog);
+  }, [refreshTracks]);
 
   const refreshDriveStatus = useCallback(async () => {
     try {
@@ -52,7 +93,143 @@ export const Admin: React.FC = () => {
     refreshDriveStatus();
   }, [refreshDriveStatus]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleCoverReplace = async (trackId: string, file: File) => {
+    if (driveStatus?.configOk === false) {
+      setMessage(`エラー: ${driveStatus.reason ?? 'Vercel 本番設定が不足しています。'}`);
+      return;
+    }
+    if (driveStatus?.connected !== true) {
+      setMessage('先に Google Drive と連携してください（下のボタン）。');
+      return;
+    }
+
+    const imageType = normalizeMimeType(file, 'image');
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(imageType)) {
+      setMessage('画像は JPG / PNG / WEBP のみアップロードできます。');
+      return;
+    }
+    if (file.size > MAX_IMAGE_BYTES) {
+      setMessage(`画像は ${formatBytes(MAX_IMAGE_BYTES)} 以下にしてください。`);
+      return;
+    }
+
+    const headers = authHeaders();
+    setRowBusyId(trackId);
+    setMessage('Google アカウント認証を確認中...');
+
+    try {
+      const config = await postJson<GoogleUploadConfigResponse>('/api/admin/google-upload-config', {}, headers);
+      const serverEmail = normalizeEmail(config.connectedUser.emailAddress);
+      const accessToken = await getDriveAccessTokenForUpload(config.clientId, serverEmail);
+      const browserUser = await fetchBrowserDriveUser(accessToken);
+      const browserEmail = normalizeEmail(browserUser.emailAddress);
+
+      if (serverEmail && browserEmail && serverEmail !== browserEmail) {
+        throw new Error(
+          `アップロードに使う Google アカウントが違います。サーバー連携済み: ${serverEmail} / 今回選択: ${browserEmail}`
+        );
+      }
+
+      setMessage('ジャケット画像を Google Drive にアップロード中...');
+      const imageUpload = await startBrowserResumableUpload(accessToken, config.folderId, 'image', file);
+      await uploadFileToDrive(
+        imageUpload.sessionUrl,
+        accessToken,
+        file,
+        Math.min(DRIVE_CHUNK_BYTES, file.size),
+        () => undefined
+      );
+
+      setMessage('カタログを更新中...');
+      await postJson<{ track: Track }>(
+        `/api/admin/tracks/${encodeURIComponent(trackId)}/cover`,
+        { imageFileId: imageUpload.fileId },
+        headers
+      );
+
+      setMessage('ジャケット画像を更新しました。');
+      window.dispatchEvent(new Event('boss-music-catalog-changed'));
+      await refreshTracks();
+    } catch (error: unknown) {
+      console.error('Cover replace failed', error);
+      const raw = error instanceof Error ? error.message : '不明なエラー';
+      const msg = parseErrorMessage(raw);
+      if (error instanceof UploadSessionExpiredError) {
+        setMessage('エラー: Drive のアップロードセッションが失効しました。もう一度お試しください。');
+      } else if (error instanceof GoogleAuthPopupError) {
+        setMessage(`エラー: ${explainUploadError(msg)}`);
+      } else if (msg.includes('Unauthorized') || msg.includes('401')) {
+        setMessage(
+          'エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。'
+        );
+      } else {
+        setMessage(`エラー: ${explainUploadError(msg)}`);
+      }
+    } finally {
+      setRowBusyId(null);
+      refreshDriveStatus().catch(() => undefined);
+    }
+  };
+
+  const handleDeleteCover = async (trackId: string) => {
+    if (!window.confirm('この曲のジャケット画像を削除しますか？Drive 上の画像ファイルも削除します。')) {
+      return;
+    }
+    const headers = authHeaders();
+    setRowBusyId(trackId);
+    setMessage('');
+    try {
+      await deleteJson<{ track: Track | null }>(
+        `/api/admin/tracks/${encodeURIComponent(trackId)}/cover`,
+        headers
+      );
+      setMessage('ジャケット画像を削除しました。');
+      window.dispatchEvent(new Event('boss-music-catalog-changed'));
+      await refreshTracks();
+    } catch (error: unknown) {
+      console.error('Delete cover failed', error);
+      const raw = error instanceof Error ? error.message : '不明なエラー';
+      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+    } finally {
+      setRowBusyId(null);
+    }
+  };
+
+  const handleDeleteTrack = async (trackId: string, trackTitle: string) => {
+    if (
+      !window.confirm(
+        `「${trackTitle}」をカタログから削除し、Drive 上の音声ファイルとジャケット画像も削除しますか？`
+      )
+    ) {
+      return;
+    }
+    const headers = authHeaders();
+    setRowBusyId(trackId);
+    setMessage('');
+    try {
+      const result = await deleteJson<{ ok: boolean; fileDeleteWarnings?: string[] }>(
+        `/api/admin/tracks/${encodeURIComponent(trackId)}`,
+        headers
+      );
+      if (result.fileDeleteWarnings?.length) {
+        setMessage(
+          `曲はカタログから削除しました。一部の Drive ファイル削除に失敗した可能性があります（${result.fileDeleteWarnings.join(', ')}）。`
+        );
+      } else {
+        setMessage('曲を削除しました。');
+      }
+      window.dispatchEvent(new Event('boss-music-catalog-changed'));
+      await refreshTracks();
+    } catch (error: unknown) {
+      console.error('Delete track failed', error);
+      const raw = error instanceof Error ? error.message : '不明なエラー';
+      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+    } finally {
+      setRowBusyId(null);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
 
     if (!audioFile || !title || !artist) {
@@ -90,8 +267,7 @@ export const Admin: React.FC = () => {
       return;
     }
 
-    const secret = viteSecret?.trim() || adminSecret.trim() || undefined;
-    const headers = createAuthHeaders(secret);
+    const headers = authHeaders();
 
     setIsUploading(true);
     setUploadProgress(0);
@@ -164,7 +340,7 @@ export const Admin: React.FC = () => {
       setImageFile(null);
       setUploadProgress(100);
 
-      const fileInputs = document.querySelectorAll('input[type="file"]') as NodeListOf<HTMLInputElement>;
+      const fileInputs = e.currentTarget.querySelectorAll('input[type="file"]') as NodeListOf<HTMLInputElement>;
       fileInputs.forEach((input) => {
         input.value = '';
       });
@@ -193,6 +369,7 @@ export const Admin: React.FC = () => {
   };
 
   const driveConnected = driveStatus?.connected ?? null;
+  const rowSectionDisabled = rowBusyId !== null || isUploading;
 
   return (
     <div className="min-h-screen bg-zen-bg text-zen-mist p-6 md:p-12 pb-32">
@@ -352,12 +529,101 @@ export const Admin: React.FC = () => {
 
           <button
             type="submit"
-            disabled={isUploading || driveConnected !== true || driveStatus?.configOk === false}
+            disabled={
+              isUploading || rowBusyId !== null || driveConnected !== true || driveStatus?.configOk === false
+            }
             className="w-full bg-neon-cyan text-black font-bold py-4 rounded-full hover:scale-[1.02] transition-transform disabled:opacity-50 disabled:hover:scale-100 mt-8"
           >
             {isUploading ? 'アップロード処理中...' : 'アップロード'}
           </button>
         </form>
+
+        <div className="mt-16 pt-10 border-t border-white/10 space-y-4">
+          <h2 className="text-xl font-headline text-white">登録済みトラック</h2>
+          <p className="text-xs text-white/50">
+            ジャケットの差し替え・削除、曲の削除ができます（カタログと Drive ファイルを更新します）。
+          </p>
+
+          {tracksLoading && <p className="text-sm text-white/50">読み込み中…</p>}
+          {tracksLoadError && <p className="text-sm text-red-300">{tracksLoadError}</p>}
+
+          {!tracksLoading && !tracksLoadError && catalogTracks && catalogTracks.length === 0 && (
+            <p className="text-sm text-white/50">まだ登録された曲がありません。</p>
+          )}
+
+          <ul className="space-y-4">
+            {catalogTracks?.map((track) => (
+              <li
+                key={track.id}
+                className="flex flex-col sm:flex-row sm:items-center gap-4 p-4 rounded-lg border border-white/10 bg-black/20"
+              >
+                <div className="flex items-center gap-3 min-w-0 flex-1">
+                  <div className="w-14 h-14 rounded-lg overflow-hidden bg-black/40 shrink-0 border border-white/10">
+                    {track.coverImage ? (
+                      <img src={track.coverImage} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-[10px] text-white/40">
+                        なし
+                      </div>
+                    )}
+                  </div>
+                  <div className="min-w-0">
+                    <p className="font-bold text-white truncate">{track.title}</p>
+                    <p className="text-sm text-white/50 truncate">{track.artist}</p>
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap gap-2 shrink-0">
+                  <label className="cursor-pointer">
+                    <input
+                      type="file"
+                      accept="image/jpeg,image/png,image/webp"
+                      className="sr-only"
+                      disabled={rowSectionDisabled || driveConnected !== true || driveStatus?.configOk === false}
+                      onChange={(ev) => {
+                        const f = ev.target.files?.[0];
+                        ev.target.value = '';
+                        if (f) void handleCoverReplace(track.id, f);
+                      }}
+                    />
+                    <span
+                      className={`inline-block text-xs font-bold px-3 py-2 rounded-full border border-white/20 bg-white/10 hover:bg-white/20 ${
+                        rowSectionDisabled || driveConnected !== true || driveStatus?.configOk === false
+                          ? 'opacity-40 pointer-events-none'
+                          : ''
+                      }`}
+                    >
+                      {rowBusyId === track.id ? '処理中…' : 'カバー変更'}
+                    </span>
+                  </label>
+
+                  <button
+                    type="button"
+                    disabled={
+                      rowSectionDisabled ||
+                      driveConnected !== true ||
+                      driveStatus?.configOk === false ||
+                      !track.driveCoverFileId
+                    }
+                    onClick={() => void handleDeleteCover(track.id)}
+                    className="text-xs font-bold px-3 py-2 rounded-full border border-amber-500/40 text-amber-200/90 hover:bg-amber-500/10 disabled:opacity-40"
+                  >
+                    ジャケット削除
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={rowSectionDisabled || driveConnected !== true || driveStatus?.configOk === false}
+                    onClick={() => void handleDeleteTrack(track.id, track.title)}
+                    className="text-xs font-bold px-3 py-2 rounded-full border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
+                  >
+                    曲を削除
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
       </div>
     </div>
   );

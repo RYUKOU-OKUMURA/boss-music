@@ -26,6 +26,32 @@ export async function postJson<T>(
   return (await res.json()) as T;
 }
 
+export async function deleteJson<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
+  const res = await fetch(path, {
+    method: 'DELETE',
+    credentials: 'include',
+    headers: {
+      ...(extraHeaders ?? {}),
+    },
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || res.statusText);
+  }
+
+  return (await res.json()) as T;
+}
+
+export async function getJson<T>(path: string): Promise<T> {
+  const res = await fetch(path, { credentials: 'include' });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(text || res.statusText);
+  }
+  return (await res.json()) as T;
+}
+
 export function parseErrorMessage(raw: string): string {
   try {
     const parsed = JSON.parse(raw) as { error?: string };
