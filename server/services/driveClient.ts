@@ -33,6 +33,17 @@ export async function getDrive() {
   return google.drive({ version: 'v3', auth });
 }
 
+export async function getConnectedDriveUser() {
+  const drive = await getDrive();
+  const response = await drive.about.get({
+    fields: 'user(displayName,emailAddress)',
+  });
+  return {
+    displayName: response.data.user?.displayName ?? null,
+    emailAddress: response.data.user?.emailAddress ?? null,
+  };
+}
+
 export function getDriveFolderId(): string {
   const id = process.env.GOOGLE_DRIVE_FOLDER_ID;
   if (!id) throw new Error('GOOGLE_DRIVE_FOLDER_ID is required');

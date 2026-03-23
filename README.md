@@ -7,7 +7,7 @@ React（Vite）フロントと Express API。**Firebase は使いません。** 
 - **メディア**: Drive のフォルダ内にアップロード。公開再生は `/api/media/audio|image/:fileId`（`Range` 対応）。
 - **カタログ**: 同じフォルダ内の `boss-music-catalog.json`（初回アクセス時に自動作成）。トラックのメタデータと `driveAudioFileId` / `driveCoverFileId` を保持。
 - **管理者**: Drive OAuth のリフレッシュトークンをサーバーに保存。管理 API は **セッション Cookie**（`SESSION_SECRET` で署名）または **`X-Admin-Secret`**（`ADMIN_SECRET`）で保護。
-- **Vercel 本番アップロード**: API は Drive の resumable upload session だけを発行し、**MP3 / 画像本体はブラウザから Google Drive に直接送信**します。
+- **Vercel 本番アップロード**: 管理画面で Google に再認証し、**MP3 / 画像本体はブラウザから Google Drive に直接送信**します。サーバーは catalog 更新だけ担当します。
 
 ## セットアップ
 
@@ -66,7 +66,7 @@ NODE_ENV=production npm start
 - **構成**: [`api/index.ts`](api/index.ts) は [`createApiApp()`](server/app.ts) を **そのまま default export**（[Vercel の Express 向け公式](https://vercel.com/docs/frameworks/backend/express)）。`serverless-http` は使わない（Lambda 向けで Vercel では 500 になり得る）。[`vercel.json`](vercel.json) に `includeFiles: server/**` を付け、関数バンドルにサーバー側コードを含めます。`rewrites` で `/api/*` をこの関数へ流します。フロントは `npm run build` の `dist/`、SPA は `index.html` への rewrite。
 - **永続化（本番必須）**: Serverless ではローカルファイルが共有されないため、**Vercel の Storage で Redis（Upstash）** をプロジェクトに接続し、環境変数 **`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`** が入るようにします（ダッシュボードの Integrations から追加）。これによりリフレッシュトークン（暗号化済み）・OAuth state・カタログ fileId が Redis に保存されます。**Vercel 本番で Redis 未設定の場合、Drive 連携と upload init は明示エラーになります。**
 - **OAuth**: 本番の `OAUTH_REDIRECT_URI` を `https://<あなたのドメイン>/api/auth/google/callback` にし、Google Cloud の承認済みリダイレクト URI と一致させます。
-- **アップロード方式**: `/api/admin/upload/init` が Drive session URL を返し、ブラウザが Google Drive へ直接 `PUT` します。`/api/admin/upload/complete` はアップロード済み fileId を検証して catalog に反映します。旧 `/api/admin/upload` はローカル専用です。
+- **アップロード方式**: `/api/admin/google-upload-config` で Google クライアント設定と連携済みアカウント情報を返し、管理画面は Google Identity Services で同じ Google アカウントを選ばせたうえで Drive API に直接アップロードします。`/api/admin/upload/complete` はアップロード済み fileId を検証して catalog に反映します。旧 `/api/admin/upload` はローカル専用です。
 - **制約**: Vercel Function に大きい MP3 を直接送る構成ではなく、Drive 直送に切り替えています。アップロード再開は Google Drive の resumable upload に依存します。
 - **フロント**: 同一オリジンなので **`VITE_API_BASE_URL` は未設定のまま**でよい（相対 `/api`）。
 

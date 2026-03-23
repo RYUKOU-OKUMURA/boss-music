@@ -5,8 +5,10 @@ const MB = 1024 * 1024;
 const MAX_AUDIO_BYTES = 150 * MB;
 const MAX_IMAGE_BYTES = 10 * MB;
 const DRIVE_CHUNK_BYTES = 8 * 1024 * 1024;
+const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 type StorageMode = 'redis' | 'local';
+type UploadKind = 'audio' | 'image';
 
 interface DriveStatusResponse {
   connected: boolean;
@@ -15,18 +17,54 @@ interface DriveStatusResponse {
   reason?: string;
 }
 
-interface UploadSession {
-  fileId: string;
-  sessionUrl: string;
-  fileName: string;
+interface GoogleUploadConfigResponse {
+  clientId: string;
+  folderId: string;
+  connectedUser: {
+    displayName: string | null;
+    emailAddress: string | null;
+  };
 }
 
-interface UploadInitResponse {
-  audio: UploadSession;
-  image: UploadSession;
+interface BrowserDriveUser {
+  displayName: string | null;
+  emailAddress: string | null;
+}
+
+interface BrowserUploadSession {
+  fileId: string;
+  fileName: string;
+  sessionUrl: string;
+}
+
+interface PutResult {
+  status: number;
+  range: string | null;
+}
+
+declare global {
+  interface Window {
+    google?: {
+      accounts: {
+        oauth2: {
+          initTokenClient: (config: {
+            client_id: string;
+            scope: string;
+            prompt?: string;
+            callback: (response: { access_token?: string; error?: string; error_description?: string }) => void;
+            error_callback?: () => void;
+          }) => {
+            requestAccessToken: () => void;
+          };
+        };
+      };
+    };
+  }
 }
 
 class UploadSessionExpiredError extends Error {}
+
+let gisScriptPromise: Promise<void> | null = null;
 
 function createAuthHeaders(secret: string | undefined): Record<string, string> {
   if (!secret) return {};
@@ -56,7 +94,7 @@ async function postJson<T>(
   return (await res.json()) as T;
 }
 
-function normalizeMimeType(file: File, kind: 'audio' | 'image'): string {
+function normalizeMimeType(file: File, kind: UploadKind): string {
   const explicit = file.type.trim().toLowerCase();
   if (explicit) return explicit;
 
@@ -68,7 +106,7 @@ function normalizeMimeType(file: File, kind: 'audio' | 'image'): string {
   return explicit;
 }
 
-function parseDriveErrorMessage(raw: string): string {
+function parseErrorMessage(raw: string): string {
   try {
     const parsed = JSON.parse(raw) as { error?: string };
     if (parsed?.error) return parsed.error;
@@ -85,6 +123,16 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`;
 }
 
+function sanitizeFileName(name: string): string {
+  const trimmed = name.trim() || 'upload.bin';
+  return trimmed.replace(/[^a-zA-Z0-9._-]/g, '_');
+}
+
+function makeDriveFileName(kind: UploadKind, name: string): string {
+  const prefix = kind === 'audio' ? 'audio' : 'cover';
+  return `${prefix}_${Date.now()}_${sanitizeFileName(name)}`;
+}
+
 function parseRangeEnd(rangeHeader: string | null): number | null {
   if (!rangeHeader) return null;
   const match = /bytes=0-(\d+)/i.exec(rangeHeader);
@@ -93,21 +141,148 @@ function parseRangeEnd(rangeHeader: string | null): number | null {
   return Number.isFinite(parsed) ? parsed : null;
 }
 
-interface DrivePutResult {
-  status: number;
-  range: string | null;
-  responseText: string;
+function normalizeEmail(email: string | null | undefined): string | null {
+  const value = String(email ?? '').trim().toLowerCase();
+  return value || null;
+}
+
+function loadGoogleIdentityScript(): Promise<void> {
+  if (window.google?.accounts?.oauth2) return Promise.resolve();
+  if (gisScriptPromise) return gisScriptPromise;
+
+  gisScriptPromise = new Promise((resolve, reject) => {
+    const existing = document.querySelector('script[data-google-identity="true"]') as HTMLScriptElement | null;
+    if (existing) {
+      existing.addEventListener('load', () => resolve(), { once: true });
+      existing.addEventListener('error', () => reject(new Error('Google Identity script failed to load.')), {
+        once: true,
+      });
+      return;
+    }
+
+    const script = document.createElement('script');
+    script.src = 'https://accounts.google.com/gsi/client';
+    script.async = true;
+    script.defer = true;
+    script.dataset.googleIdentity = 'true';
+    script.onload = () => resolve();
+    script.onerror = () => reject(new Error('Google Identity script failed to load.'));
+    document.head.appendChild(script);
+  });
+
+  return gisScriptPromise;
+}
+
+async function requestDriveAccessToken(clientId: string): Promise<string> {
+  await loadGoogleIdentityScript();
+  if (!window.google?.accounts?.oauth2) {
+    throw new Error('Google Identity Services is not available.');
+  }
+
+  return await new Promise((resolve, reject) => {
+    const tokenClient = window.google!.accounts.oauth2.initTokenClient({
+      client_id: clientId,
+      scope: DRIVE_SCOPE,
+      prompt: 'consent select_account',
+      callback: (response) => {
+        if (response.error || !response.access_token) {
+          reject(new Error(response.error_description || response.error || 'Google authorization failed.'));
+          return;
+        }
+        resolve(response.access_token);
+      },
+      error_callback: () => reject(new Error('Google authorization popup was blocked or closed.')),
+    });
+
+    tokenClient.requestAccessToken();
+  });
+}
+
+async function fetchJson<T>(url: string, accessToken: string): Promise<T> {
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(parseErrorMessage(text) || res.statusText);
+  }
+  return (await res.json()) as T;
+}
+
+async function fetchBrowserDriveUser(accessToken: string): Promise<BrowserDriveUser> {
+  const data = await fetchJson<{ user?: { displayName?: string; emailAddress?: string } }>(
+    'https://www.googleapis.com/drive/v3/about?fields=user(displayName,emailAddress)&supportsAllDrives=true',
+    accessToken
+  );
+  return {
+    displayName: data.user?.displayName ?? null,
+    emailAddress: data.user?.emailAddress ?? null,
+  };
+}
+
+async function generateDriveFileId(accessToken: string): Promise<string> {
+  const data = await fetchJson<{ ids?: string[] }>(
+    'https://www.googleapis.com/drive/v3/files/generateIds?count=1&space=drive&type=files',
+    accessToken
+  );
+  const id = data.ids?.[0];
+  if (!id) throw new Error('Drive fileId を生成できませんでした。');
+  return id;
+}
+
+async function startBrowserResumableUpload(
+  accessToken: string,
+  folderId: string,
+  kind: UploadKind,
+  file: File
+): Promise<BrowserUploadSession> {
+  const fileId = await generateDriveFileId(accessToken);
+  const fileName = makeDriveFileName(kind, file.name);
+  const mimeType = normalizeMimeType(file, kind);
+
+  const res = await fetch(
+    'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json; charset=UTF-8',
+        'X-Upload-Content-Type': mimeType,
+        'X-Upload-Content-Length': String(file.size),
+      },
+      body: JSON.stringify({
+        id: fileId,
+        name: fileName,
+        parents: [folderId],
+        mimeType,
+      }),
+    }
+  );
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Drive upload session の作成に失敗しました: ${parseErrorMessage(text)}`);
+  }
+
+  const sessionUrl = res.headers.get('location');
+  if (!sessionUrl) throw new Error('Drive upload session URL が返されませんでした。');
+
+  return { fileId, fileName, sessionUrl };
 }
 
 function drivePut(
   sessionUrl: string,
+  accessToken: string,
   headers: Record<string, string>,
   body: Blob | null,
   onProgress?: (loaded: number, total: number) => void
-): Promise<DrivePutResult> {
+): Promise<PutResult> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', sessionUrl);
+    xhr.setRequestHeader('Authorization', `Bearer ${accessToken}`);
     for (const [key, value] of Object.entries(headers)) {
       xhr.setRequestHeader(key, value);
     }
@@ -120,17 +295,21 @@ function drivePut(
       resolve({
         status: xhr.status,
         range: xhr.getResponseHeader('Range'),
-        responseText: xhr.responseText,
       });
     };
-    xhr.onerror = () => reject(new Error('Network error'));
+    xhr.onerror = () => reject(new Error('Google Drive upload request failed.'));
     xhr.send(body);
   });
 }
 
-async function queryUploadedOffset(sessionUrl: string, totalBytes: number): Promise<number> {
+async function queryUploadedOffset(
+  sessionUrl: string,
+  accessToken: string,
+  totalBytes: number
+): Promise<number> {
   const result = await drivePut(
     sessionUrl,
+    accessToken,
     {
       'Content-Length': '0',
       'Content-Range': `*/${totalBytes}`,
@@ -151,6 +330,7 @@ async function queryUploadedOffset(sessionUrl: string, totalBytes: number): Prom
 
 async function uploadFileToDrive(
   sessionUrl: string,
+  accessToken: string,
   file: File,
   chunkSize: number,
   onProgress: (loaded: number, total: number) => void
@@ -165,6 +345,7 @@ async function uploadFileToDrive(
     try {
       const result = await drivePut(
         sessionUrl,
+        accessToken,
         {
           'Content-Length': String(chunk.size),
           'Content-Range': `bytes ${offset}-${nextOffset - 1}/${file.size}`,
@@ -191,22 +372,18 @@ async function uploadFileToDrive(
       }
 
       if (result.status >= 500) {
-        offset = await queryUploadedOffset(sessionUrl, file.size);
+        offset = await queryUploadedOffset(sessionUrl, accessToken, file.size);
         retries += 1;
-        if (retries > 5) {
-          throw new Error('Drive upload retried too many times.');
-        }
+        if (retries > 5) throw new Error('Drive upload retried too many times.');
         onProgress(offset, file.size);
         continue;
       }
 
       throw new Error(`Unexpected upload response (${result.status})`);
     } catch (error) {
-      if (error instanceof UploadSessionExpiredError) {
-        throw error;
-      }
+      if (error instanceof UploadSessionExpiredError) throw error;
 
-      offset = await queryUploadedOffset(sessionUrl, file.size);
+      offset = await queryUploadedOffset(sessionUrl, accessToken, file.size);
       retries += 1;
       if (retries > 5) {
         throw error instanceof Error ? error : new Error('Drive upload failed.');
@@ -295,34 +472,41 @@ export const Admin: React.FC = () => {
 
     setIsUploading(true);
     setUploadProgress(0);
-    setMessage('Google Drive のアップロード準備中...');
+    setMessage('Google アカウント認証を確認中...');
 
     try {
-      const init = await postJson<UploadInitResponse>(
-        '/api/admin/upload/init',
-        {
-          audio: {
-            name: audioFile.name,
-            size: audioFile.size,
-            type: audioType,
-          },
-          image: {
-            name: imageFile.name,
-            size: imageFile.size,
-            type: imageType,
-          },
-        },
-        headers
-      );
+      const config = await postJson<GoogleUploadConfigResponse>('/api/admin/google-upload-config', {}, headers);
+      const accessToken = await requestDriveAccessToken(config.clientId);
+      const browserUser = await fetchBrowserDriveUser(accessToken);
+      const serverEmail = normalizeEmail(config.connectedUser.emailAddress);
+      const browserEmail = normalizeEmail(browserUser.emailAddress);
+
+      if (serverEmail && browserEmail && serverEmail !== browserEmail) {
+        throw new Error(
+          `アップロードに使う Google アカウントが違います。サーバー連携済み: ${serverEmail} / 今回選択: ${browserEmail}`
+        );
+      }
+
+      setMessage('Google Drive のアップロード準備中...');
+      const [imageUpload, audioUpload] = await Promise.all([
+        startBrowserResumableUpload(accessToken, config.folderId, 'image', imageFile),
+        startBrowserResumableUpload(accessToken, config.folderId, 'audio', audioFile),
+      ]);
 
       setMessage('ジャケット画像を Google Drive にアップロード中...');
-      await uploadFileToDrive(init.image.sessionUrl, imageFile, Math.min(DRIVE_CHUNK_BYTES, imageFile.size), (loaded, total) => {
-        const pct = total === 0 ? 0 : loaded / total;
-        setUploadProgress(Math.round(pct * 20));
-      });
+      await uploadFileToDrive(
+        imageUpload.sessionUrl,
+        accessToken,
+        imageFile,
+        Math.min(DRIVE_CHUNK_BYTES, imageFile.size),
+        (loaded, total) => {
+          const pct = total === 0 ? 0 : loaded / total;
+          setUploadProgress(Math.round(pct * 20));
+        }
+      );
 
       setMessage('MP3 を Google Drive にアップロード中...');
-      await uploadFileToDrive(init.audio.sessionUrl, audioFile, DRIVE_CHUNK_BYTES, (loaded, total) => {
+      await uploadFileToDrive(audioUpload.sessionUrl, accessToken, audioFile, DRIVE_CHUNK_BYTES, (loaded, total) => {
         const pct = total === 0 ? 0 : loaded / total;
         setUploadProgress(20 + Math.round(pct * 70));
       });
@@ -337,8 +521,8 @@ export const Admin: React.FC = () => {
           artist,
           description,
           tags,
-          audioFileId: init.audio.fileId,
-          imageFileId: init.image.fileId,
+          audioFileId: audioUpload.fileId,
+          imageFileId: imageUpload.fileId,
         },
         headers
       );
@@ -361,7 +545,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Upload failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      const msg = parseDriveErrorMessage(raw);
+      const msg = parseErrorMessage(raw);
       if (error instanceof UploadSessionExpiredError) {
         setMessage('エラー: Drive のアップロードセッションが失効しました。もう一度アップロードしてください。');
       } else if (msg.includes('Unauthorized') || msg.includes('401')) {
@@ -387,7 +571,7 @@ export const Admin: React.FC = () => {
           <div>
             <h1 className="text-3xl font-headline">楽曲アップロード</h1>
             <p className="text-sm text-white/50 mt-2">
-              Vercel 本番では MP3 をブラウザから直接 Google Drive に送信します。
+              Vercel 本番ではブラウザから Google Drive に直接アップロードします。
             </p>
           </div>
         </div>
@@ -395,8 +579,8 @@ export const Admin: React.FC = () => {
         <div className="mb-8 p-4 rounded-lg border border-white/10 bg-black/20 space-y-3">
           <p className="text-sm font-bold text-white/90">Google Drive 連携（初回・再認証）</p>
           <p className="text-xs text-white/50">
-            楽曲とカタログは Google Drive の指定フォルダに保存されます。Vercel 本番では Upstash
-            Redis が必須です。
+            サーバー連携済みの Google アカウントと同じアカウントでアップロードしてください。Vercel
+            本番では Upstash Redis が必須です。
           </p>
           <div className="flex flex-wrap gap-3 items-center">
             <a

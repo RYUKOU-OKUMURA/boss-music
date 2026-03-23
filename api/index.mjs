@@ -149,6 +149,16 @@ async function getDrive() {
   const auth = await getOAuth2ClientForDrive();
   return google.drive({ version: "v3", auth });
 }
+async function getConnectedDriveUser() {
+  const drive = await getDrive();
+  const response = await drive.about.get({
+    fields: "user(displayName,emailAddress)"
+  });
+  return {
+    displayName: response.data.user?.displayName ?? null,
+    emailAddress: response.data.user?.emailAddress ?? null
+  };
+}
 function getDriveFolderId() {
   const id = process.env.GOOGLE_DRIVE_FOLDER_ID;
   if (!id) throw new Error("GOOGLE_DRIVE_FOLDER_ID is required");
@@ -535,11 +545,9 @@ import { Readable as Readable2 } from "stream";
 import { Router as Router3 } from "express";
 
 // server/services/driveUploads.ts
-import { google as google2 } from "googleapis";
 var MB = 1024 * 1024;
 var MAX_AUDIO_BYTES = 150 * MB;
 var MAX_IMAGE_BYTES = 10 * MB;
-var AUDIO_UPLOAD_CHUNK_BYTES = 8 * 1024 * 1024;
 var AUDIO_MIME_TYPES = /* @__PURE__ */ new Set(["audio/mpeg", "audio/mp3"]);
 var IMAGE_MIME_TYPES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp"]);
 function getUploadRules(kind) {
@@ -560,89 +568,11 @@ function makeUploadError(message, code = "UPLOAD_VALIDATION_FAILED") {
   err.code = code;
   return err;
 }
-function sanitizeFileName(name) {
-  const trimmed = name.trim() || "upload.bin";
-  return trimmed.replace(/[^a-zA-Z0-9._-]/g, "_");
-}
-function toErrorMessage(text) {
-  const trimmed = text.trim();
-  return trimmed ? trimmed.slice(0, 500) : "unknown error";
-}
 function parseNumericSize(value) {
   if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
   if (typeof value !== "string") return NaN;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : NaN;
-}
-function assertUploadFileInput(kind, input) {
-  const rules = getUploadRules(kind);
-  const name = String(input.name ?? "").trim();
-  const size = Number(input.size);
-  const type = String(input.type ?? "").trim().toLowerCase();
-  if (!name) throw makeUploadError(`${rules.label} \u306E\u30D5\u30A1\u30A4\u30EB\u540D\u304C\u5FC5\u8981\u3067\u3059\u3002`);
-  if (!Number.isFinite(size) || size <= 0) {
-    throw makeUploadError(`${rules.label} \u306E\u30D5\u30A1\u30A4\u30EB\u30B5\u30A4\u30BA\u304C\u4E0D\u6B63\u3067\u3059\u3002`);
-  }
-  if (size > rules.maxBytes) {
-    throw makeUploadError(
-      `${rules.label} \u306F ${Math.round(rules.maxBytes / MB)}MB \u4EE5\u4E0B\u306B\u3057\u3066\u304F\u3060\u3055\u3044\u3002`
-    );
-  }
-  if (!rules.mimeTypes.has(type)) {
-    throw makeUploadError(`${rules.label} \u306E MIME type \u304C\u4E0D\u6B63\u3067\u3059\u3002`);
-  }
-  return { name, size, type };
-}
-async function getDriveAccessToken() {
-  const oauth2 = await getOAuth2ClientForDrive();
-  const accessToken = await oauth2.getAccessToken();
-  const token = typeof accessToken === "string" ? accessToken : accessToken?.token;
-  if (!token) {
-    throw makeUploadError("Drive access token \u3092\u53D6\u5F97\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002", "DRIVE_AUTH_FAILED");
-  }
-  return token;
-}
-async function startDriveResumableUpload(kind, input, folderId) {
-  const file = assertUploadFileInput(kind, input);
-  const oauth2 = await getOAuth2ClientForDrive();
-  const drive = google2.drive({ version: "v3", auth: oauth2 });
-  const ids = await drive.files.generateIds({ count: 1, space: "drive", type: "files" });
-  const fileId = ids.data.ids?.[0];
-  if (!fileId) {
-    throw makeUploadError("Drive fileId \u3092\u751F\u6210\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002", "DRIVE_INIT_FAILED");
-  }
-  const token = await getDriveAccessToken();
-  const fileName = `${getUploadRules(kind).prefix}_${Date.now()}_${sanitizeFileName(file.name)}`;
-  const response = await fetch(
-    "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true&fields=id,name,mimeType,size,parents",
-    {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json; charset=UTF-8",
-        "X-Upload-Content-Type": file.type,
-        "X-Upload-Content-Length": String(file.size)
-      },
-      body: JSON.stringify({
-        id: fileId,
-        name: fileName,
-        parents: [folderId],
-        mimeType: file.type
-      })
-    }
-  );
-  if (!response.ok) {
-    const text = await response.text();
-    throw makeUploadError(
-      `Drive upload session \u306E\u4F5C\u6210\u306B\u5931\u6557\u3057\u307E\u3057\u305F: ${toErrorMessage(text)}`,
-      "DRIVE_INIT_FAILED"
-    );
-  }
-  const sessionUrl = response.headers.get("location");
-  if (!sessionUrl) {
-    throw makeUploadError("Drive upload session URL \u304C\u8FD4\u3055\u308C\u307E\u305B\u3093\u3067\u3057\u305F\u3002", "DRIVE_INIT_FAILED");
-  }
-  return { fileId, sessionUrl, fileName };
 }
 async function verifyDriveUpload(drive, fileId, kind, folderId) {
   const response = await drive.files.get({
@@ -727,28 +657,20 @@ adminRouter.get(
   })
 );
 adminRouter.post(
-  "/admin/upload/init",
+  "/admin/google-upload-config",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const body = req.body ?? {};
+    const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+    if (!clientId) {
+      res.status(500).json({ error: "GOOGLE_CLIENT_ID is required" });
+      return;
+    }
     const folderId = getDriveFolderId();
-    const audio = assertUploadFileInput("audio", {
-      name: String(body.audio?.name ?? ""),
-      size: Number(body.audio?.size),
-      type: String(body.audio?.type ?? "")
-    });
-    const image = assertUploadFileInput("image", {
-      name: String(body.image?.name ?? ""),
-      size: Number(body.image?.size),
-      type: String(body.image?.type ?? "")
-    });
-    const [audioUpload, imageUpload] = await Promise.all([
-      startDriveResumableUpload("audio", audio, folderId),
-      startDriveResumableUpload("image", image, folderId)
-    ]);
+    const user = await getConnectedDriveUser();
     res.json({
-      audio: audioUpload,
-      image: imageUpload
+      clientId,
+      folderId,
+      connectedUser: user
     });
   })
 );
@@ -818,7 +740,7 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     if (isVercelRuntime()) {
       res.status(410).json({
-        error: "Use /api/admin/upload/init and /api/admin/upload/complete in Vercel production."
+        error: "Use browser-direct Drive upload and /api/admin/upload/complete in Vercel production."
       });
       return;
     }
@@ -895,7 +817,7 @@ adminRouter.post(
 
 // server/routes/media.ts
 import { Router as Router4 } from "express";
-import { google as google3 } from "googleapis";
+import { google as google2 } from "googleapis";
 
 // server/utils/mediaHeaders.ts
 function applyGoogleHeaders(res, headers, status) {
@@ -924,7 +846,7 @@ mediaRouter.get(
     const range = req.headers.range;
     try {
       const auth = await getOAuth2ClientForDrive();
-      const drive = google3.drive({ version: "v3", auth });
+      const drive = google2.drive({ version: "v3", auth });
       const gRes = await drive.files.get(
         { fileId, alt: "media", supportsAllDrives: true },
         {
@@ -958,7 +880,7 @@ mediaRouter.get(
     const range = req.headers.range;
     try {
       const auth = await getOAuth2ClientForDrive();
-      const drive = google3.drive({ version: "v3", auth });
+      const drive = google2.drive({ version: "v3", auth });
       const gRes = await drive.files.get(
         { fileId, alt: "media", supportsAllDrives: true },
         {

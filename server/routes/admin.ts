@@ -2,14 +2,9 @@ import crypto from 'crypto';
 import { Readable } from 'stream';
 import { Router } from 'express';
 import { loadRefreshToken } from '../services/tokenStore';
-import { getDrive, getDriveFolderId } from '../services/driveClient';
+import { getConnectedDriveUser, getDrive, getDriveFolderId } from '../services/driveClient';
 import { addTrackAndSave, type TrackRow } from '../services/catalog';
-import {
-  assertUploadFileInput,
-  deleteDriveFileIfPresent,
-  startDriveResumableUpload,
-  verifyDriveUpload,
-} from '../services/driveUploads';
+import { deleteDriveFileIfPresent, verifyDriveUpload } from '../services/driveUploads';
 import { getPersistenceStatus, isVercelRuntime } from '../services/runtimeEnv';
 import { requireAdmin } from '../middleware/adminAuth';
 import { upload } from '../utils/upload';
@@ -17,11 +12,6 @@ import { asyncHandler } from '../utils/asyncHandler';
 import { toPublicTrack } from '../utils/trackPublic';
 
 export const adminRouter = Router();
-
-interface UploadInitBody {
-  audio?: { name?: string; size?: number; type?: string };
-  image?: { name?: string; size?: number; type?: string };
-}
 
 interface UploadCompleteBody {
   title?: string;
@@ -72,31 +62,20 @@ adminRouter.get(
 );
 
 adminRouter.post(
-  '/admin/upload/init',
+  '/admin/google-upload-config',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const body = (req.body ?? {}) as UploadInitBody;
+    const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
+    if (!clientId) {
+      res.status(500).json({ error: 'GOOGLE_CLIENT_ID is required' });
+      return;
+    }
     const folderId = getDriveFolderId();
-
-    const audio = assertUploadFileInput('audio', {
-      name: String(body.audio?.name ?? ''),
-      size: Number(body.audio?.size),
-      type: String(body.audio?.type ?? ''),
-    });
-    const image = assertUploadFileInput('image', {
-      name: String(body.image?.name ?? ''),
-      size: Number(body.image?.size),
-      type: String(body.image?.type ?? ''),
-    });
-
-    const [audioUpload, imageUpload] = await Promise.all([
-      startDriveResumableUpload('audio', audio, folderId),
-      startDriveResumableUpload('image', image, folderId),
-    ]);
-
+    const user = await getConnectedDriveUser();
     res.json({
-      audio: audioUpload,
-      image: imageUpload,
+      clientId,
+      folderId,
+      connectedUser: user,
     });
   })
 );
@@ -174,7 +153,7 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     if (isVercelRuntime()) {
       res.status(410).json({
-        error: 'Use /api/admin/upload/init and /api/admin/upload/complete in Vercel production.',
+        error: 'Use browser-direct Drive upload and /api/admin/upload/complete in Vercel production.',
       });
       return;
     }
