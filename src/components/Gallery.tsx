@@ -29,9 +29,7 @@ export const Gallery: React.FC = () => {
       <div className="mb-16 flex flex-col md:flex-row md:items-end justify-between gap-8">
         <div className="max-w-2xl">
           <h1 className="text-5xl md:text-7xl font-headline font-bold text-white leading-tight tracking-tight">
-            WEEKLY <span className="text-neon-cyan italic">BURST</span>
-            <br />
-            (ウィークリー・バースト)
+            BOSS-MUSIC <span className="text-neon-cyan italic">LIBRARY</span>
           </h1>
           <p className="mt-6 text-lg text-zen-mist/70 font-light leading-relaxed">
             アンダーグラウンドから厳選されたハイエナジーなビート。
