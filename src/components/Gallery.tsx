@@ -1,10 +1,33 @@
-import React from 'react';
+import React, { useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAudio } from '../context/AudioContext';
 import { TrackCard } from './TrackCard';
 import { Play } from 'lucide-react';
 
+function trackMatchesQuery(
+  track: { title: string; artist: string; description: string; tags: string[] },
+  queryLower: string
+): boolean {
+  const haystack = [track.title, track.artist, track.description, ...track.tags].join(' ').toLowerCase();
+  return haystack.includes(queryLower);
+}
+
 export const Gallery: React.FC = () => {
   const { tracks, play, isLoading } = useAudio();
+  const [searchParams] = useSearchParams();
+  const queryRaw = searchParams.get('q')?.trim() ?? '';
+  const queryLower = queryRaw.toLowerCase();
+
+  const filteredTracks = useMemo(() => {
+    if (!queryRaw) return tracks;
+    return tracks.filter((t) => trackMatchesQuery(t, queryLower));
+  }, [tracks, queryRaw, queryLower]);
+
+  const shuffleStartIndex = useMemo(() => {
+    if (filteredTracks.length === 0) return 0;
+    const i = tracks.findIndex((t) => t.id === filteredTracks[0].id);
+    return i >= 0 ? i : 0;
+  }, [filteredTracks, tracks]);
 
   const tags = [
     { name: 'トレンド', active: true },
@@ -38,7 +61,7 @@ export const Gallery: React.FC = () => {
           </p>
         </div>
         <button
-          onClick={() => play(0)}
+          onClick={() => play(shuffleStartIndex)}
           className="flex items-center gap-3 bg-neon-cyan text-black px-8 py-4 rounded-full font-bold text-sm tracking-wider hover:scale-105 transition-transform shadow-[0_0_30px_rgba(143,245,255,0.3)]"
         >
           <Play className="w-5 h-5" fill="currentColor" />
@@ -62,12 +85,25 @@ export const Gallery: React.FC = () => {
         ))}
       </div>
 
-      {/* Grid */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 md:gap-8">
-        {tracks.map((track, index) => (
-          <TrackCard key={track.id} track={track} index={index} />
-        ))}
-      </div>
+      {/* Search results (URL ?q= でナビと同期) */}
+      {queryRaw ? (
+        <p className="text-sm text-zen-mist/70 mb-6">
+          「{queryRaw}」の検索結果 — {filteredTracks.length} 件
+        </p>
+      ) : null}
+
+      {queryRaw && filteredTracks.length === 0 ? (
+        <div className="rounded-2xl border border-white/10 bg-surface/50 px-8 py-16 text-center text-zen-mist/60">
+          該当する曲が見つかりませんでした。別のキーワードで試してください。
+        </div>
+      ) : (
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 md:gap-8">
+          {filteredTracks.map((track) => {
+            const index = tracks.findIndex((t) => t.id === track.id);
+            return <TrackCard key={track.id} track={track} index={index} />;
+          })}
+        </div>
+      )}
     </div>
   );
 };
