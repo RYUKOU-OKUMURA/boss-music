@@ -1,7 +1,5 @@
 # 設計ドキュメント
 
-- [アーキテクチャ設計.md](./アーキテクチャ設計.md) — 初期設計（一部 Firebase / `tracks.json` 前提の記述が残る場合があります。現行は Drive カタログが正です）
+- [アーキテクチャ.md](./アーキテクチャ.md) — 現行構成（Express + Google Drive、Vercel Serverless API 含む）
 - [技術スタック.md](./技術スタック.md)
 - [Suno楽曲ポートフォリオサイト-要件定義.md](./Suno楽曲ポートフォリオサイト-要件定義.md)
-
-Firebase 由来の参照用ファイルは [legacy/](./legacy/README.md) にあります。
