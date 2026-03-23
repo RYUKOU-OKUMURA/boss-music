@@ -36,7 +36,7 @@ npm run dev:all
 1. `/admin` を開く
 2. **Drive と連携する**で OAuth 完了（別タブ）。`SESSION_SECRET` があると管理者用 Cookie が付く
 3. 曲をアップロード（Cookie または `ADMIN_SECRET` / `VITE_ADMIN_SECRET` で認証）。本番の正式サポートは **MP3 最大 150MB**、画像は **JPG / PNG / WEBP 最大 10MB**。
-4. Vercel 本番では、アップロード時に **サーバー連携済みと同じ Google アカウント** を選ぶ
+4. Vercel 本番では、初回アップロード時だけ Google Drive 権限を許可し、以後は **サーバー連携済みと同じ Google アカウント** を継続利用する
 
 カタログファイル ID は、Redis 未使用時は `data/catalog-file-id.txt` に保存されます（`.gitignore` 済み）。Vercel（パターン B）では **Redis** に保存します。
 

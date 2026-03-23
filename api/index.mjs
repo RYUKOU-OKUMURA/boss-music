@@ -299,6 +299,7 @@ function asyncHandler(fn) {
 
 // server/utils/trackPublic.ts
 function toPublicTrack(t) {
+  const coverImage = t.driveCoverFileId ? `/api/media/image/${encodeURIComponent(t.driveCoverFileId)}` : "";
   return {
     id: t.id,
     title: t.title,
@@ -311,7 +312,7 @@ function toPublicTrack(t) {
     driveAudioFileId: t.driveAudioFileId,
     driveCoverFileId: t.driveCoverFileId,
     audioUrl: `/api/media/audio/${encodeURIComponent(t.driveAudioFileId)}`,
-    coverImage: `/api/media/image/${encodeURIComponent(t.driveCoverFileId)}`
+    coverImage
   };
 }
 
@@ -681,8 +682,8 @@ adminRouter.post(
       res.status(400).json({ error: "title and artist are required" });
       return;
     }
-    if (!audioFileId || !imageFileId) {
-      res.status(400).json({ error: "audioFileId and imageFileId are required" });
+    if (!audioFileId) {
+      res.status(400).json({ error: "audioFileId is required" });
       return;
     }
     const drive = await getDrive();
@@ -691,7 +692,9 @@ adminRouter.post(
     let verifiedImage = null;
     try {
       verifiedAudio = await verifyDriveUpload(drive, audioFileId, "audio", folderId);
-      verifiedImage = await verifyDriveUpload(drive, imageFileId, "image", folderId);
+      if (imageFileId) {
+        verifiedImage = await verifyDriveUpload(drive, imageFileId, "image", folderId);
+      }
       const track = {
         id: crypto4.randomUUID(),
         title,
@@ -702,7 +705,7 @@ adminRouter.post(
         playable: true,
         order: -1,
         driveAudioFileId: verifiedAudio.fileId,
-        driveCoverFileId: verifiedImage.fileId
+        ...verifiedImage ? { driveCoverFileId: verifiedImage.fileId } : {}
       };
       await addTrackAndSave(drive, folderId, track);
       res.json({ track: toPublicTrack(track) });

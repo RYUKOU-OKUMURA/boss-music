@@ -1,6 +1,10 @@
 import type { TrackRow } from '../services/catalog';
 
 export function toPublicTrack(t: TrackRow) {
+  const coverImage = t.driveCoverFileId
+    ? `/api/media/image/${encodeURIComponent(t.driveCoverFileId)}`
+    : '';
+
   return {
     id: t.id,
     title: t.title,
@@ -13,6 +17,6 @@ export function toPublicTrack(t: TrackRow) {
     driveAudioFileId: t.driveAudioFileId,
     driveCoverFileId: t.driveCoverFileId,
     audioUrl: `/api/media/audio/${encodeURIComponent(t.driveAudioFileId)}`,
-    coverImage: `/api/media/image/${encodeURIComponent(t.driveCoverFileId)}`,
+    coverImage,
   };
 }

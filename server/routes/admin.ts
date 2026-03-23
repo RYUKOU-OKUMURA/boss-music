@@ -94,8 +94,8 @@ adminRouter.post(
       res.status(400).json({ error: 'title and artist are required' });
       return;
     }
-    if (!audioFileId || !imageFileId) {
-      res.status(400).json({ error: 'audioFileId and imageFileId are required' });
+    if (!audioFileId) {
+      res.status(400).json({ error: 'audioFileId is required' });
       return;
     }
 
@@ -106,7 +106,9 @@ adminRouter.post(
 
     try {
       verifiedAudio = await verifyDriveUpload(drive, audioFileId, 'audio', folderId);
-      verifiedImage = await verifyDriveUpload(drive, imageFileId, 'image', folderId);
+      if (imageFileId) {
+        verifiedImage = await verifyDriveUpload(drive, imageFileId, 'image', folderId);
+      }
 
       const track: TrackRow = {
         id: crypto.randomUUID(),
@@ -118,7 +120,7 @@ adminRouter.post(
         playable: true,
         order: -1,
         driveAudioFileId: verifiedAudio.fileId,
-        driveCoverFileId: verifiedImage.fileId,
+        ...(verifiedImage ? { driveCoverFileId: verifiedImage.fileId } : {}),
       };
 
       await addTrackAndSave(drive, folderId, track);

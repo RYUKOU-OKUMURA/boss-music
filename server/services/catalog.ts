@@ -23,7 +23,7 @@ export interface TrackRow {
   playable: boolean;
   order: number;
   driveAudioFileId: string;
-  driveCoverFileId: string;
+  driveCoverFileId?: string;
 }
 
 export interface CatalogRoot {

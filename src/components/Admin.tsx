@@ -42,6 +42,11 @@ interface PutResult {
   range: string | null;
 }
 
+interface CachedDriveToken {
+  accessToken: string;
+  expiresAt: number;
+}
+
 declare global {
   interface Window {
     google?: {
@@ -51,7 +56,13 @@ declare global {
             client_id: string;
             scope: string;
             prompt?: string;
-            callback: (response: { access_token?: string; error?: string; error_description?: string }) => void;
+            login_hint?: string;
+            callback: (response: {
+              access_token?: string;
+              error?: string;
+              error_description?: string;
+              expires_in?: number;
+            }) => void;
             error_callback?: (error: { type?: string }) => void;
           }) => {
             requestAccessToken: () => void;
@@ -64,6 +75,7 @@ declare global {
 
 class UploadSessionExpiredError extends Error {}
 class GoogleAuthPopupError extends Error {}
+class GoogleAuthInteractionRequiredError extends Error {}
 
 let gisScriptPromise: Promise<void> | null = null;
 
@@ -170,6 +182,44 @@ function normalizeEmail(email: string | null | undefined): string | null {
   return value || null;
 }
 
+function getDriveTokenCacheKey(clientId: string, email: string | null): string {
+  return `boss-music:drive-token:${clientId}:${email ?? 'unknown'}`;
+}
+
+function readCachedDriveToken(clientId: string, email: string | null): string | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(getDriveTokenCacheKey(clientId, email));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedDriveToken;
+    if (!parsed.accessToken || !parsed.expiresAt) return null;
+    if (parsed.expiresAt <= Date.now() + 60_000) {
+      window.sessionStorage.removeItem(getDriveTokenCacheKey(clientId, email));
+      return null;
+    }
+    return parsed.accessToken;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedDriveToken(
+  clientId: string,
+  email: string | null,
+  accessToken: string,
+  expiresInSeconds?: number
+): void {
+  if (typeof window === 'undefined') return;
+  if (!accessToken) return;
+  const expiresAt = Date.now() + Math.max((expiresInSeconds ?? 3600) - 60, 60) * 1000;
+  const payload: CachedDriveToken = { accessToken, expiresAt };
+  try {
+    window.sessionStorage.setItem(getDriveTokenCacheKey(clientId, email), JSON.stringify(payload));
+  } catch {
+    // ignore storage failures
+  }
+}
+
 function loadGoogleIdentityScript(): Promise<void> {
   if (window.google?.accounts?.oauth2) return Promise.resolve();
   if (gisScriptPromise) return gisScriptPromise;
@@ -197,7 +247,11 @@ function loadGoogleIdentityScript(): Promise<void> {
   return gisScriptPromise;
 }
 
-async function requestDriveAccessToken(clientId: string): Promise<string> {
+async function requestDriveAccessToken(
+  clientId: string,
+  loginHint: string | null,
+  prompt: '' | 'consent' = ''
+): Promise<{ accessToken: string; expiresIn?: number }> {
   await loadGoogleIdentityScript();
   if (!window.google?.accounts?.oauth2) {
     throw new Error('Google Identity Services is not available.');
@@ -207,13 +261,25 @@ async function requestDriveAccessToken(clientId: string): Promise<string> {
     const tokenClient = window.google!.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: DRIVE_SCOPE,
-      prompt: 'consent select_account',
+      prompt,
+      ...(loginHint ? { login_hint: loginHint } : {}),
       callback: (response) => {
         if (response.error || !response.access_token) {
+          if (
+            response.error === 'interaction_required' ||
+            response.error === 'consent_required' ||
+            response.error === 'login_required'
+          ) {
+            reject(new GoogleAuthInteractionRequiredError(response.error_description || response.error));
+            return;
+          }
           reject(new Error(response.error_description || response.error || 'Google authorization failed.'));
           return;
         }
-        resolve(response.access_token);
+        resolve({
+          accessToken: response.access_token,
+          expiresIn: response.expires_in,
+        });
       },
       error_callback: (error) => {
         if (error?.type === 'popup_closed' || error?.type === 'popup_failed_to_open') {
@@ -226,6 +292,23 @@ async function requestDriveAccessToken(clientId: string): Promise<string> {
 
     tokenClient.requestAccessToken();
   });
+}
+
+async function getDriveAccessTokenForUpload(clientId: string, email: string | null): Promise<string> {
+  const cached = readCachedDriveToken(clientId, email);
+  if (cached) return cached;
+
+  try {
+    const silent = await requestDriveAccessToken(clientId, email, '');
+    writeCachedDriveToken(clientId, email, silent.accessToken, silent.expiresIn);
+    return silent.accessToken;
+  } catch (error) {
+    if (!(error instanceof GoogleAuthInteractionRequiredError)) throw error;
+  }
+
+  const prompted = await requestDriveAccessToken(clientId, email, 'consent');
+  writeCachedDriveToken(clientId, email, prompted.accessToken, prompted.expiresIn);
+  return prompted.accessToken;
 }
 
 async function fetchJson<T>(url: string, accessToken: string): Promise<T> {
@@ -462,8 +545,8 @@ export const Admin: React.FC = () => {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!audioFile || !imageFile || !title || !artist) {
-      setMessage('必須項目（タイトル、アーティスト、MP3、画像ファイル）を入力してください。');
+    if (!audioFile || !title || !artist) {
+      setMessage('必須項目（タイトル、アーティスト、MP3 ファイル）を入力してください。');
       return;
     }
 
@@ -478,13 +561,13 @@ export const Admin: React.FC = () => {
     }
 
     const audioType = normalizeMimeType(audioFile, 'audio');
-    const imageType = normalizeMimeType(imageFile, 'image');
+    const imageType = imageFile ? normalizeMimeType(imageFile, 'image') : '';
 
     if (!['audio/mpeg', 'audio/mp3'].includes(audioType)) {
       setMessage('MP3 ファイルのみアップロードできます。');
       return;
     }
-    if (!['image/jpeg', 'image/png', 'image/webp'].includes(imageType)) {
+    if (imageFile && !['image/jpeg', 'image/png', 'image/webp'].includes(imageType)) {
       setMessage('画像は JPG / PNG / WEBP のみアップロードできます。');
       return;
     }
@@ -492,7 +575,7 @@ export const Admin: React.FC = () => {
       setMessage(`MP3 は ${formatBytes(MAX_AUDIO_BYTES)} 以下にしてください。`);
       return;
     }
-    if (imageFile.size > MAX_IMAGE_BYTES) {
+    if (imageFile && imageFile.size > MAX_IMAGE_BYTES) {
       setMessage(`画像は ${formatBytes(MAX_IMAGE_BYTES)} 以下にしてください。`);
       return;
     }
@@ -506,9 +589,9 @@ export const Admin: React.FC = () => {
 
     try {
       const config = await postJson<GoogleUploadConfigResponse>('/api/admin/google-upload-config', {}, headers);
-      const accessToken = await requestDriveAccessToken(config.clientId);
-      const browserUser = await fetchBrowserDriveUser(accessToken);
       const serverEmail = normalizeEmail(config.connectedUser.emailAddress);
+      const accessToken = await getDriveAccessTokenForUpload(config.clientId, serverEmail);
+      const browserUser = await fetchBrowserDriveUser(accessToken);
       const browserEmail = normalizeEmail(browserUser.emailAddress);
 
       if (serverEmail && browserEmail && serverEmail !== browserEmail) {
@@ -518,22 +601,27 @@ export const Admin: React.FC = () => {
       }
 
       setMessage('Google Drive のアップロード準備中...');
-      const [imageUpload, audioUpload] = await Promise.all([
-        startBrowserResumableUpload(accessToken, config.folderId, 'image', imageFile),
-        startBrowserResumableUpload(accessToken, config.folderId, 'audio', audioFile),
-      ]);
+      const audioUploadPromise = startBrowserResumableUpload(accessToken, config.folderId, 'audio', audioFile);
+      const imageUploadPromise = imageFile
+        ? startBrowserResumableUpload(accessToken, config.folderId, 'image', imageFile)
+        : Promise.resolve<BrowserUploadSession | null>(null);
+      const [audioUpload, imageUpload] = await Promise.all([audioUploadPromise, imageUploadPromise]);
 
-      setMessage('ジャケット画像を Google Drive にアップロード中...');
-      await uploadFileToDrive(
-        imageUpload.sessionUrl,
-        accessToken,
-        imageFile,
-        Math.min(DRIVE_CHUNK_BYTES, imageFile.size),
-        (loaded, total) => {
-          const pct = total === 0 ? 0 : loaded / total;
-          setUploadProgress(Math.round(pct * 20));
-        }
-      );
+      if (imageFile && imageUpload) {
+        setMessage('ジャケット画像を Google Drive にアップロード中...');
+        await uploadFileToDrive(
+          imageUpload.sessionUrl,
+          accessToken,
+          imageFile,
+          Math.min(DRIVE_CHUNK_BYTES, imageFile.size),
+          (loaded, total) => {
+            const pct = total === 0 ? 0 : loaded / total;
+            setUploadProgress(Math.round(pct * 20));
+          }
+        );
+      } else {
+        setUploadProgress(20);
+      }
 
       setMessage('MP3 を Google Drive にアップロード中...');
       await uploadFileToDrive(audioUpload.sessionUrl, accessToken, audioFile, DRIVE_CHUNK_BYTES, (loaded, total) => {
@@ -552,7 +640,7 @@ export const Admin: React.FC = () => {
           description,
           tags,
           audioFileId: audioUpload.fileId,
-          imageFileId: imageUpload.fileId,
+          imageFileId: imageUpload?.fileId,
         },
         headers
       );
@@ -733,14 +821,13 @@ export const Admin: React.FC = () => {
 
           <div>
             <label className="block text-sm mb-2 opacity-70">
-              ジャケット画像 (JPG/PNG/WEBP / 最大 {formatBytes(MAX_IMAGE_BYTES)}) *
+              ジャケット画像 (JPG/PNG/WEBP / 最大 {formatBytes(MAX_IMAGE_BYTES)} / 任意)
             </label>
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
               onChange={(e) => setImageFile(e.target.files?.[0] || null)}
               className="w-full bg-black/50 border border-white/10 rounded p-3 text-white"
-              required
               disabled={isUploading}
             />
             {isUploading && uploadProgress > 0 && (

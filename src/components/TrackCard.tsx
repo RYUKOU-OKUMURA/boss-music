@@ -8,15 +8,24 @@ import clsx from 'clsx';
 export const TrackCard: React.FC<{ track: Track; index: number }> = ({ track, index }) => {
   const { currentTrack, isPlaying, play, pause } = useAudio();
   const isCurrent = currentTrack?.id === track.id;
+  const coverImage = resolveCoverImageUrl(track);
 
   return (
     <div className="group relative bg-surface-container rounded-2xl overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:bg-surface-bright flex flex-col">
       <div className="relative aspect-square overflow-hidden">
-        <img
-          src={resolveCoverImageUrl(track)}
-          alt={track.title}
-          className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
-        />
+        {coverImage ? (
+          <img
+            src={coverImage}
+            alt={track.title}
+            className="w-full h-full object-cover transition-transform duration-700 group-hover:scale-105"
+          />
+        ) : (
+          <div className="w-full h-full bg-[radial-gradient(circle_at_top,#8ff5ff33,transparent_55%),linear-gradient(135deg,#10141d,#05070b)] flex items-center justify-center transition-transform duration-700 group-hover:scale-105">
+            <div className="w-20 h-20 rounded-full border border-white/15 bg-black/30 flex items-center justify-center text-white/70 text-2xl font-headline tracking-[0.2em]">
+              {track.title.slice(0, 2).toUpperCase()}
+            </div>
+          </div>
+        )}
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition-opacity duration-300 flex items-center justify-center">
           <button
             onClick={(e) => {

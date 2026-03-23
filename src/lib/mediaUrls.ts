@@ -39,7 +39,7 @@ export function resolveAudioPlaybackUrl(track: {
 }
 
 export function resolveCoverImageUrl(track: {
-  coverImage: string;
+  coverImage?: string;
   driveCoverFileId?: string;
 }): string {
   const u = track.coverImage?.trim() ?? '';
@@ -54,4 +54,3 @@ export function resolveCoverImageUrl(track: {
   }
   return u;
 }
-

@@ -10,7 +10,7 @@ export interface Track {
   description: string;
   createdAt: string;
   audioUrl: string;
-  coverImage: string;
+  coverImage?: string;
   playable: boolean;
   tags: string[];
   order?: number;
