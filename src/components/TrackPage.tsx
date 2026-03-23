@@ -1,14 +1,15 @@
-import React, { useEffect } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useEffect, useState, useCallback } from 'react';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useAudio } from '../context/AudioContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { VinylDisc } from './VinylDisc';
-import { Menu, Play, Pause, VolumeX } from 'lucide-react';
+import { Menu, Play, Pause, VolumeX, ChevronLeft, SkipBack, SkipForward, Link2 } from 'lucide-react';
 
 export const TrackPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const { tracks, currentTrackIndex, isPlaying, play, pause, isLoading, currentTime, duration, seek } = useAudio();
+  const [shareFeedback, setShareFeedback] = useState<'idle' | 'copied'>('idle');
 
   const trackIndex = tracks.findIndex((t) => t.id === id);
   const track = tracks[trackIndex];
@@ -18,6 +19,64 @@ export const TrackPage: React.FC = () => {
       navigate('/');
     }
   }, [track, navigate, isLoading]);
+
+  const goToLibrary = useCallback(() => {
+    navigate('/');
+  }, [navigate]);
+
+  const goAdjacentTrack = useCallback(
+    (delta: -1 | 1) => {
+      if (tracks.length <= 1 || trackIndex < 0) return;
+      const nextIndex = (trackIndex + delta + tracks.length) % tracks.length;
+      const next = tracks[nextIndex];
+      navigate(`/track/${next.id}`, { replace: true });
+      play(nextIndex);
+    },
+    [tracks, trackIndex, navigate, play]
+  );
+
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        goToLibrary();
+        return;
+      }
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement | null)?.isContentEditable) {
+        return;
+      }
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        goAdjacentTrack(-1);
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        goAdjacentTrack(1);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [goToLibrary, goAdjacentTrack]);
+
+  const handleShare = useCallback(async () => {
+    const url = window.location.href;
+    const title = `${track?.title ?? ''} — BOSS-MUSIC`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, url });
+        return;
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setShareFeedback('copied');
+      window.setTimeout(() => setShareFeedback('idle'), 2000);
+    } catch {
+      /* noop */
+    }
+  }, [track?.title]);
 
   if (isLoading) {
     return (
@@ -41,8 +100,20 @@ export const TrackPage: React.FC = () => {
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
+  const canChangeTrack = tracks.length > 1;
+
   return (
     <div className="bg-zen-bg text-zen-mist font-body selection:bg-zen-accent/30 min-h-screen overflow-hidden flex items-center justify-center cursor-crosshair">
+      <Link
+        to="/"
+        className="fixed top-6 left-6 md:top-8 md:left-10 z-[60] inline-flex items-center gap-2 text-white/40 hover:text-white/90 transition-colors duration-300 text-xs md:text-sm font-light tracking-[0.2em]"
+        aria-label="ライブラリに戻る"
+      >
+        <ChevronLeft className="w-5 h-5 shrink-0" strokeWidth={1.25} />
+        <span className="hidden sm:inline">ライブラリに戻る</span>
+        <span className="sm:hidden">戻る</span>
+      </Link>
+
       <div className="fixed inset-0 z-0 landscape-gradient">
         <div className="fog-layer"></div>
         <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-[0.03] mix-blend-overlay"></div>
@@ -124,27 +195,59 @@ export const TrackPage: React.FC = () => {
               </div>
             </div>
           </button>
-          <button className="text-[10px] hover:text-zen-accent transition-colors underline underline-offset-4 decoration-white/10">プレイリストに追加</button>
-          <button className="text-[10px] hover:text-zen-accent transition-colors underline underline-offset-4 decoration-white/10">共有する</button>
+          <button type="button" className="text-[10px] hover:text-zen-accent transition-colors underline underline-offset-4 decoration-white/10">
+            プレイリストに追加
+          </button>
+          <button
+            type="button"
+            onClick={handleShare}
+            className="inline-flex items-center gap-1.5 text-[10px] hover:text-zen-accent transition-colors underline underline-offset-4 decoration-white/10"
+            aria-label="この曲のリンクを共有"
+          >
+            <Link2 className="w-3 h-3 opacity-70" strokeWidth={1.5} />
+            {shareFeedback === 'copied' ? 'リンクをコピーしました' : '共有する'}
+          </button>
         </div>
       </div>
 
-      <button
-        onClick={() => {
-          if (isCurrent && isPlaying) {
-            pause();
-          } else {
-            play(trackIndex);
-          }
-        }}
-        className="w-16 h-16 rounded-full border border-white/10 flex items-center justify-center text-white/40 hover:text-white hover:border-white/30 hover:scale-105 transition-all duration-700 fixed bottom-32 left-1/2 -translate-x-1/2 z-50 shadow-[0_0_15px_rgba(188,0,255,0.3)]"
-      >
-        {isCurrent && isPlaying ? (
-          <Pause className="w-8 h-8 font-extralight" fill="currentColor" />
-        ) : (
-          <Play className="w-8 h-8 font-extralight ml-1" fill="currentColor" />
-        )}
-      </button>
+      <div className="fixed bottom-32 left-1/2 -translate-x-1/2 z-50 flex items-center gap-8 md:gap-12">
+        <button
+          type="button"
+          onClick={() => goAdjacentTrack(-1)}
+          disabled={!canChangeTrack}
+          className="w-12 h-12 rounded-full border border-white/10 flex items-center justify-center text-white/35 hover:text-white hover:border-white/25 transition-all duration-500 disabled:opacity-25 disabled:pointer-events-none"
+          aria-label="前の曲"
+        >
+          <SkipBack className="w-5 h-5" strokeWidth={1.25} />
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (isCurrent && isPlaying) {
+              pause();
+            } else {
+              play(trackIndex);
+            }
+          }}
+          className="w-16 h-16 rounded-full border border-white/10 flex items-center justify-center text-white/40 hover:text-white hover:border-white/30 hover:scale-105 transition-all duration-700 shadow-[0_0_15px_rgba(188,0,255,0.3)]"
+          aria-label={isCurrent && isPlaying ? '一時停止' : '再生'}
+        >
+          {isCurrent && isPlaying ? (
+            <Pause className="w-8 h-8 font-extralight" fill="currentColor" />
+          ) : (
+            <Play className="w-8 h-8 font-extralight ml-1" fill="currentColor" />
+          )}
+        </button>
+        <button
+          type="button"
+          onClick={() => goAdjacentTrack(1)}
+          disabled={!canChangeTrack}
+          className="w-12 h-12 rounded-full border border-white/10 flex items-center justify-center text-white/35 hover:text-white hover:border-white/25 transition-all duration-500 disabled:opacity-25 disabled:pointer-events-none"
+          aria-label="次の曲"
+        >
+          <SkipForward className="w-5 h-5" strokeWidth={1.25} />
+        </button>
+      </div>
 
       <button className="text-white/20 hover:text-white transition-all duration-500 group relative">
         <VolumeX className="w-6 h-6 font-extralight fixed bottom-14 right-12 z-50" />
