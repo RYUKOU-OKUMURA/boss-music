@@ -1,13 +1,13 @@
 import React, { createContext, useCallback, useContext, useMemo, useState } from 'react';
 
-export type TrackPageUiPattern = 'vinyl' | 'illustration';
+export type TrackPageUiPattern = 'vinyl' | 'illustration' | 'spectrum';
 
 const STORAGE_KEY = 'boss-music-track-page-ui';
 
 function readStoredPattern(): TrackPageUiPattern {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === 'vinyl' || raw === 'illustration') return raw;
+    if (raw === 'vinyl' || raw === 'illustration' || raw === 'spectrum') return raw;
     /** 旧値 `minimal` をイラストパターンへ移行 */
     if (raw === 'minimal') {
       localStorage.setItem(STORAGE_KEY, 'illustration');

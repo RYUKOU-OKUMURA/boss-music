@@ -6,6 +6,7 @@ import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { useTrackPagePlayback } from '../hooks/useTrackPagePlayback';
 import { TrackPageVinylLayout } from './TrackPageVinylLayout';
 import { TrackPageIllustrationLayout } from './TrackPageIllustrationLayout';
+import { TrackPageSpectrumLayout } from './TrackPageSpectrumLayout';
 import { TrackPagePatternMenu } from './TrackPagePatternMenu';
 import { ChevronLeft, Link2 } from 'lucide-react';
 
@@ -106,6 +107,13 @@ export const TrackPage: React.FC = () => {
           inert={pattern !== 'illustration'}
         >
           <TrackPageIllustrationLayout {...layoutProps} />
+        </div>
+        <div
+          className={panelClass(pattern === 'spectrum')}
+          aria-hidden={pattern !== 'spectrum'}
+          inert={pattern !== 'spectrum'}
+        >
+          <TrackPageSpectrumLayout {...layoutProps} />
         </div>
       </div>
 

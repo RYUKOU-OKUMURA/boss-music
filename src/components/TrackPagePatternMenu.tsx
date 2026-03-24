@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { startTransition, useEffect, useRef, useState } from 'react';
 import { Settings } from 'lucide-react';
 import clsx from 'clsx';
 import { useTrackPageUi, type TrackPageUiPattern } from '../context/TrackPageUiContext';
@@ -8,6 +8,7 @@ type MenuPlacement = 'nav' | 'track';
 const LABELS: Record<TrackPageUiPattern, string> = {
   vinyl: 'レコード',
   illustration: 'イラスト',
+  spectrum: 'スペクトラム',
 };
 
 interface TrackPagePatternMenuProps {
@@ -15,7 +16,7 @@ interface TrackPagePatternMenuProps {
   className?: string;
 }
 
-/** 再生ページの UI パターン（vinyl / illustration）を選ぶポップオーバー。Navigation と TrackPage の両方で使用 */
+/** 再生ページの UI パターンを選ぶポップオーバー。Navigation と TrackPage の両方で使用 */
 export const TrackPagePatternMenu: React.FC<TrackPagePatternMenuProps> = ({
   placement = 'nav',
   className,
@@ -43,7 +44,9 @@ export const TrackPagePatternMenu: React.FC<TrackPagePatternMenuProps> = ({
   }, [open]);
 
   const select = (p: TrackPageUiPattern) => {
-    setPattern(p);
+    startTransition(() => {
+      setPattern(p);
+    });
     setOpen(false);
   };
 
@@ -65,7 +68,7 @@ export const TrackPagePatternMenu: React.FC<TrackPagePatternMenuProps> = ({
           role="dialog"
           aria-label="再生画面のレイアウト"
           className={clsx(
-            'absolute z-[100] mt-2 min-w-[11rem] rounded-lg border border-white/10 bg-surface py-2 shadow-xl',
+            'absolute z-[100] mt-2 min-w-[12.5rem] rounded-lg border border-white/10 bg-surface py-2 shadow-xl',
             placement === 'nav' ? 'right-0' : 'right-0'
           )}
         >
@@ -73,7 +76,7 @@ export const TrackPagePatternMenu: React.FC<TrackPagePatternMenuProps> = ({
             再生画面
           </p>
           <div className="flex flex-col gap-0.5 px-1">
-            {(['vinyl', 'illustration'] as const).map((p) => (
+            {(['vinyl', 'illustration', 'spectrum'] as const).map((p) => (
               <button
                 key={p}
                 type="button"

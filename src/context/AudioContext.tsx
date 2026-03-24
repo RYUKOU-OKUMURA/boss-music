@@ -1,4 +1,12 @@
-import React, { createContext, useContext, useState, useEffect, useRef, ReactNode } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useState,
+  useEffect,
+  useRef,
+  ReactNode,
+  type RefObject,
+} from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { resolveAudioPlaybackUrl } from '../lib/mediaUrls';
 import { resolveAudioSource, revokeObjectUrl } from '../lib/audioCache';
@@ -38,12 +46,14 @@ interface AudioContextType {
   seek: (time: number) => void;
   setVolume: (volume: number) => void;
   isLoading: boolean;
+  /** Web Audio の Analyser（スペクトラム可視化用）。`MediaElementSource` は audio 要素につき 1 回だけ接続 */
+  audioAnalyserRef: RefObject<AnalyserNode | null>;
 }
 
-const AudioContext = createContext<AudioContextType | undefined>(undefined);
+const AudioStateContext = createContext<AudioContextType | undefined>(undefined);
 
 export const useAudio = () => {
-  const context = useContext(AudioContext);
+  const context = useContext(AudioStateContext);
   if (!context) {
     throw new Error('useAudio must be used within an AudioProvider');
   }
@@ -60,6 +70,10 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [volume, setVolumeState] = useState<number>(1);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioAnalyserRef = useRef<AnalyserNode | null>(null);
+  const webAudioContextRef = useRef<AudioContext | null>(null);
+  /** Web Audio グラフは audio 要素に対して1回だけ。Strict Mode の effect 再実行で二重 createMediaElementSource しないよう、切断はクリーンアップで行わない */
+  const webAudioGraphInitializedRef = useRef(false);
   const navigate = useNavigate();
   const location = useLocation();
   const lastTrackIdRef = useRef<string | null>(null);
@@ -135,6 +149,53 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       audio.removeEventListener('pause', handlePause);
     };
   }, [tracks.length]);
+
+  /** HTMLAudioElement につき 1 回だけ: MediaElementSource → Analyser → destination */
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+
+    if (!webAudioGraphInitializedRef.current) {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext: typeof globalThis.AudioContext }).webkitAudioContext;
+      if (!Ctor) {
+        console.warn('Web Audio API (AudioContext) is not available');
+        return;
+      }
+
+      try {
+        const ctx = new Ctor();
+        webAudioContextRef.current = ctx;
+
+        const source = ctx.createMediaElementSource(audio);
+        const analyser = ctx.createAnalyser();
+        analyser.fftSize = 2048;
+        analyser.smoothingTimeConstant = 0.65;
+        analyser.minDecibels = -88;
+        analyser.maxDecibels = -22;
+
+        source.connect(analyser);
+        analyser.connect(ctx.destination);
+        audioAnalyserRef.current = analyser;
+        webAudioGraphInitializedRef.current = true;
+      } catch (e) {
+        console.warn('Web Audio graph setup failed', e);
+        return;
+      }
+    }
+
+    const ctx = webAudioContextRef.current;
+    const resumeCtx = () => {
+      void ctx?.resume();
+    };
+    audio.addEventListener('play', resumeCtx);
+
+    return () => {
+      audio.removeEventListener('play', resumeCtx);
+      /* グラフは切断しない: React Strict Mode が同じ audio で createMediaElementSource を再実行し得るため */
+    };
+  }, []);
 
   useEffect(() => {
     if (!audioRef.current || tracks.length === 0) return;
@@ -248,7 +309,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const currentTrack = tracks[currentTrackIndex] || null;
 
   return (
-    <AudioContext.Provider
+    <AudioStateContext.Provider
       value={{
         tracks,
         currentTrackIndex,
@@ -265,9 +326,10 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         seek,
         setVolume,
         isLoading,
+        audioAnalyserRef,
       }}
     >
       {children}
-    </AudioContext.Provider>
+    </AudioStateContext.Provider>
   );
 };
