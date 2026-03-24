@@ -1,6 +1,7 @@
 import React from 'react';
 import { Link, useLocation, useSearchParams } from 'react-router-dom';
-import { Bell, Settings, User, Search } from 'lucide-react';
+import { Bell, User, Search } from 'lucide-react';
+import { TrackPagePatternMenu } from './TrackPagePatternMenu';
 import clsx from 'clsx';
 
 export const Navigation: React.FC = () => {
@@ -96,9 +97,7 @@ export const Navigation: React.FC = () => {
         <button className="text-zen-mist/60 hover:text-zen-mist transition-colors">
           <Bell className="w-5 h-5" />
         </button>
-        <button className="text-zen-mist/60 hover:text-zen-mist transition-colors">
-          <Settings className="w-5 h-5" />
-        </button>
+        <TrackPagePatternMenu placement="nav" />
         <button className="w-8 h-8 rounded-full bg-gradient-to-br from-neon-cyan to-neon-purple flex items-center justify-center overflow-hidden">
           <User className="w-5 h-5 text-white" />
         </button>

@@ -1,5 +1,4 @@
 import React from 'react';
-import clsx from 'clsx';
 
 interface VinylDiscProps {
   isPlaying: boolean;
@@ -7,35 +6,77 @@ interface VinylDiscProps {
   alt: string;
 }
 
+/** 黒レコード＋中央ジャケ＋トーンアーム。再生中のみレコード部分が回転 */
 export const VinylDisc: React.FC<VinylDiscProps> = ({ isPlaying, coverImage, alt }) => {
   return (
-    <div className="relative w-64 h-64 md:w-96 md:h-96 rounded-full overflow-hidden border border-white/10 shadow-2xl transition-all duration-1000 group-hover:scale-105 group-hover:border-white/30 neon-glow border-zen-accent/30">
-      {coverImage ? (
-        <img
-          src={coverImage}
-          alt={alt}
-          className="w-full h-full object-cover opacity-90 group-hover:opacity-100 transition-opacity duration-1000"
+    <div className="relative mx-auto flex h-[min(92vw,30rem)] w-[min(92vw,30rem)] max-w-[100%] items-center justify-center md:h-[30rem] md:w-[30rem]">
+      {/* トーンアーム（回転しない） */}
+      <svg
+        className="pointer-events-none absolute -right-1 top-2 z-30 h-[14rem] w-[11rem] drop-shadow-[0_4px_12px_rgba(0,0,0,0.6)] md:-right-2 md:top-3 md:h-[16rem] md:w-[12.5rem]"
+        viewBox="0 0 120 140"
+        fill="none"
+        xmlns="http://www.w3.org/2000/svg"
+        aria-hidden
+      >
+        <path
+          d="M98 12c4 0 8 3 9 7l18 52c1 3 0 6-2 8L72 118c-2 2-5 2-8 1l-4-2"
+          stroke="rgba(255,255,255,0.88)"
+          strokeWidth="3.5"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+        <path
+          d="M98 12 L108 8 L118 38 L104 42 Z"
+          fill="rgba(245,245,245,0.95)"
+          stroke="rgba(0,0,0,0.15)"
+          strokeWidth="0.5"
+        />
+        <ellipse cx="72" cy="118" rx="10" ry="5" fill="rgba(30,30,30,0.95)" />
+        <circle cx="68" cy="112" r="3" fill="rgba(255,255,255,0.4)" />
+      </svg>
+
+      {/* レコード本体（回転） */}
+      <div
+        className="relative w-full h-full rounded-full will-change-transform"
+        style={{
+          animation: 'spin-slow 24s linear infinite',
+          animationPlayState: isPlaying ? 'running' : 'paused',
+        }}
+      >
+        <div
+          className="absolute inset-0 rounded-full shadow-[0_28px_56px_rgba(0,0,0,0.65),inset_0_1px_0_rgba(255,255,255,0.06)]"
           style={{
-            animation: 'spin-slow 20s linear infinite',
-            animationPlayState: isPlaying ? 'running' : 'paused',
+            background: `
+              repeating-radial-gradient(
+                circle at center,
+                #050505 0px,
+                #050505 3px,
+                #0c0c0c 3px,
+                #0c0c0c 6px
+              )
+            `,
           }}
         />
-      ) : (
         <div
-          className="w-full h-full bg-[radial-gradient(circle_at_top,#8ff5ff33,transparent_55%),linear-gradient(135deg,#10141d,#05070b)] flex items-center justify-center text-white/60"
+          className="absolute inset-0 rounded-full pointer-events-none opacity-[0.35]"
           style={{
-            animation: 'spin-slow 20s linear infinite',
-            animationPlayState: isPlaying ? 'running' : 'paused',
+            background:
+              'repeating-radial-gradient(circle at center, transparent 0, transparent 8px, rgba(255,255,255,0.04) 8px, rgba(255,255,255,0.04) 9px)',
           }}
-        >
-          <div className="w-24 h-24 md:w-32 md:h-32 rounded-full border border-white/15 bg-black/30 flex items-center justify-center text-center px-4 text-sm md:text-lg font-headline tracking-[0.25em]">
-            NO COVER
-          </div>
+        />
+        {/* 中央ラベル（ジャケ） */}
+        <div className="absolute inset-[20%] rounded-full overflow-hidden z-10 border border-black/50 shadow-[inset_0_0_20px_rgba(0,0,0,0.85)] ring-1 ring-white/10">
+          {coverImage ? (
+            <img src={coverImage} alt={alt} className="w-full h-full object-cover" />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center bg-gradient-to-br from-[#1a1a22] to-[#0a0a0f]">
+              <span className="font-headline text-xs tracking-[0.2em] text-white/35 md:text-sm">NO COVER</span>
+            </div>
+          )}
         </div>
-      )}
-      {/* Static lighting overlay to give it a physical feel while spinning */}
-      <div className="absolute inset-0 bg-gradient-to-tr from-black/40 via-transparent to-white/10 pointer-events-none mix-blend-overlay"></div>
-      <div className="absolute inset-0 bg-gradient-to-t from-zen-bg/80 via-transparent to-transparent pointer-events-none"></div>
+        {/* センターホール */}
+        <div className="absolute left-1/2 top-1/2 z-20 h-4 w-4 -translate-x-1/2 -translate-y-1/2 rounded-full border border-white/20 bg-[#0a0b0d] shadow-inner" />
+      </div>
     </div>
   );
 };
