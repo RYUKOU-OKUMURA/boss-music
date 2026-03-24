@@ -4,6 +4,8 @@ import React, {
   useState,
   useEffect,
   useRef,
+  useMemo,
+  useCallback,
   ReactNode,
   type RefObject,
 } from 'react';
@@ -30,6 +32,9 @@ interface TracksApiResponse {
   tracks: Track[];
 }
 
+/** timeupdate からの setState を間引き、再生中の Provider 再レンダーを抑える（最大約 5 回/秒） */
+const TIME_UI_THROTTLE_MS = 200;
+
 interface AudioContextType {
   tracks: Track[];
   currentTrackIndex: number;
@@ -50,14 +55,28 @@ interface AudioContextType {
   audioAnalyserRef: RefObject<AnalyserNode | null>;
 }
 
-const AudioStateContext = createContext<AudioContextType | undefined>(undefined);
+/** `timeupdate` で毎秒更新される currentTime を購読しないコンポーネント向け（Gallery / TrackCard 等） */
+export type AudioMainContextType = Omit<AudioContextType, 'currentTime'>;
 
-export const useAudio = () => {
-  const context = useContext(AudioStateContext);
-  if (!context) {
+const AudioMainContext = createContext<AudioMainContextType | undefined>(undefined);
+/** currentTime のみ高頻度更新。メインと分離して再レンダー範囲を狭める */
+const AudioTimeContext = createContext<number>(0);
+
+export const useAudio = (): AudioContextType => {
+  const main = useContext(AudioMainContext);
+  const currentTime = useContext(AudioTimeContext);
+  if (!main) {
     throw new Error('useAudio must be used within an AudioProvider');
   }
-  return context;
+  return { ...main, currentTime };
+};
+
+export const useAudioMain = (): AudioMainContextType => {
+  const main = useContext(AudioMainContext);
+  if (!main) {
+    throw new Error('useAudioMain must be used within an AudioProvider');
+  }
+  return main;
 };
 
 export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
@@ -79,10 +98,103 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const lastTrackIdRef = useRef<string | null>(null);
   const blobUrlRef = useRef<string | null>(null);
   const isPlayingRef = useRef(isPlaying);
+  const lastTimeUiEmitRef = useRef(0);
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
+
+  const currentTrack = tracks[currentTrackIndex] || null;
+
+  const play = useCallback((index?: number) => {
+    if (index !== undefined && index >= 0 && index < tracks.length) {
+      setCurrentTrackIndex(index);
+    }
+    setIsPlaying(true);
+  }, [tracks]);
+
+  const pause = useCallback(() => {
+    setIsPlaying(false);
+  }, []);
+
+  const resume = useCallback(() => {
+    setIsPlaying(true);
+  }, []);
+
+  const next = useCallback(() => {
+    if (tracks.length === 0) return;
+    const fromIndex = currentTrackIndex;
+    setCurrentTrackIndex((prev) => (prev + 1) % tracks.length);
+    setIsPlaying(true);
+
+    if (location.pathname.startsWith('/track/')) {
+      const nextTrack = tracks[(fromIndex + 1) % tracks.length];
+      navigate(`/track/${nextTrack.id}`, { replace: true });
+    }
+  }, [tracks, currentTrackIndex, location.pathname, navigate]);
+
+  const prev = useCallback(() => {
+    if (tracks.length === 0) return;
+    const fromIndex = currentTrackIndex;
+    setCurrentTrackIndex((prev) => (prev - 1 + tracks.length) % tracks.length);
+    setIsPlaying(true);
+
+    if (location.pathname.startsWith('/track/')) {
+      const prevTrack = tracks[(fromIndex - 1 + tracks.length) % tracks.length];
+      navigate(`/track/${prevTrack.id}`, { replace: true });
+    }
+  }, [tracks, currentTrackIndex, location.pathname, navigate]);
+
+  const seek = useCallback((time: number) => {
+    if (audioRef.current) {
+      audioRef.current.currentTime = time;
+      lastTimeUiEmitRef.current = performance.now();
+      setCurrentTime(time);
+    }
+  }, []);
+
+  const setVolume = useCallback((newVolume: number) => {
+    if (audioRef.current) {
+      audioRef.current.volume = newVolume;
+      setVolumeState(newVolume);
+    }
+  }, []);
+
+  const mainContextValue = useMemo<AudioMainContextType>(
+    () => ({
+      tracks,
+      currentTrackIndex,
+      currentTrack,
+      isPlaying,
+      duration,
+      volume,
+      play,
+      pause,
+      resume,
+      next,
+      prev,
+      seek,
+      setVolume,
+      isLoading,
+      audioAnalyserRef,
+    }),
+    [
+      tracks,
+      currentTrackIndex,
+      currentTrack,
+      isPlaying,
+      duration,
+      volume,
+      play,
+      pause,
+      resume,
+      next,
+      prev,
+      seek,
+      setVolume,
+      isLoading,
+    ]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -93,8 +205,9 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         const res = await fetch('/api/tracks');
         if (!res.ok) throw new Error(await res.text());
         const data = (await res.json()) as TracksApiResponse;
+        const nextTracks = Array.isArray(data.tracks) ? data.tracks : [];
         if (!cancelled) {
-          setTracks(Array.isArray(data.tracks) ? data.tracks : []);
+          setTracks(nextTracks);
         }
       } catch (e) {
         console.error('Failed to load tracks', e);
@@ -129,7 +242,13 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
     const audio = audioRef.current;
 
-    const handleTimeUpdate = () => setCurrentTime(audio.currentTime);
+    const handleTimeUpdate = () => {
+      const t = audio.currentTime;
+      const now = performance.now();
+      if (now - lastTimeUiEmitRef.current < TIME_UI_THROTTLE_MS) return;
+      lastTimeUiEmitRef.current = now;
+      setCurrentTime(t);
+    };
     const handleLoadedMetadata = () => setDuration(audio.duration);
     const handleEnded = () => next();
     const handlePlay = () => setIsPlaying(true);
@@ -148,7 +267,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('pause', handlePause);
     };
-  }, [tracks.length]);
+  }, [tracks.length, next]);
 
   /** HTMLAudioElement につき 1 回だけ: MediaElementSource → Analyser → destination */
   useEffect(() => {
@@ -256,81 +375,9 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     };
   }, [currentTrackIndex, tracks, isPlaying]);
 
-  const play = (index?: number) => {
-    if (index !== undefined && index >= 0 && index < tracks.length) {
-      setCurrentTrackIndex(index);
-    }
-    setIsPlaying(true);
-  };
-
-  const pause = () => {
-    setIsPlaying(false);
-  };
-
-  const resume = () => {
-    setIsPlaying(true);
-  };
-
-  const next = () => {
-    if (tracks.length === 0) return;
-    setCurrentTrackIndex((prev) => (prev + 1) % tracks.length);
-    setIsPlaying(true);
-
-    if (location.pathname.startsWith('/track/')) {
-      const nextTrack = tracks[(currentTrackIndex + 1) % tracks.length];
-      navigate(`/track/${nextTrack.id}`, { replace: true });
-    }
-  };
-
-  const prev = () => {
-    if (tracks.length === 0) return;
-    setCurrentTrackIndex((prev) => (prev - 1 + tracks.length) % tracks.length);
-    setIsPlaying(true);
-
-    if (location.pathname.startsWith('/track/')) {
-      const prevTrack = tracks[(currentTrackIndex - 1 + tracks.length) % tracks.length];
-      navigate(`/track/${prevTrack.id}`, { replace: true });
-    }
-  };
-
-  const seek = (time: number) => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = time;
-      setCurrentTime(time);
-    }
-  };
-
-  const setVolume = (newVolume: number) => {
-    if (audioRef.current) {
-      audioRef.current.volume = newVolume;
-      setVolumeState(newVolume);
-    }
-  };
-
-  const currentTrack = tracks[currentTrackIndex] || null;
-
   return (
-    <AudioStateContext.Provider
-      value={{
-        tracks,
-        currentTrackIndex,
-        currentTrack,
-        isPlaying,
-        currentTime,
-        duration,
-        volume,
-        play,
-        pause,
-        resume,
-        next,
-        prev,
-        seek,
-        setVolume,
-        isLoading,
-        audioAnalyserRef,
-      }}
-    >
-      {children}
-    </AudioStateContext.Provider>
+    <AudioMainContext.Provider value={mainContextValue}>
+      <AudioTimeContext.Provider value={currentTime}>{children}</AudioTimeContext.Provider>
+    </AudioMainContext.Provider>
   );
 };

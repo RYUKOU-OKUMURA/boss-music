@@ -1,6 +1,6 @@
 import React from 'react';
 import { Play, Pause, Volume2, SkipBack, SkipForward } from 'lucide-react';
-import { useAudio } from '../context/AudioContext';
+import { useAudioMain } from '../context/AudioContext';
 import { formatTrackTime } from '../hooks/useTrackPagePlayback';
 import type { TrackPageLayoutProps } from './trackPageLayoutTypes';
 import { SpectrumVisualizer } from './SpectrumVisualizer';
@@ -23,7 +23,7 @@ export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
   isPlaying,
   spectrumPanelActive = true,
 }) => {
-  const { audioAnalyserRef, isPlaying: audioIsPlaying } = useAudio();
+  const { audioAnalyserRef, isPlaying: audioIsPlaying } = useAudioMain();
 
   return (
     <div className="relative flex w-full flex-col items-center justify-start px-6 py-6 pb-12 md:py-8">

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useAudio } from '../context/AudioContext';
+import { useAudioMain } from '../context/AudioContext';
 import { TrackCard } from './TrackCard';
 import { Play } from 'lucide-react';
 
@@ -13,7 +13,7 @@ function trackMatchesQuery(
 }
 
 export const Gallery: React.FC = () => {
-  const { tracks, play, isLoading } = useAudio();
+  const { tracks, play, isLoading } = useAudioMain();
   const [searchParams] = useSearchParams();
   const queryRaw = searchParams.get('q')?.trim() ?? '';
   const queryLower = queryRaw.toLowerCase();

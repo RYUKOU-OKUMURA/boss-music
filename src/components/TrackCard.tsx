@@ -1,12 +1,12 @@
 import React from 'react';
-import { useAudio, Track } from '../context/AudioContext';
+import { useAudioMain, Track } from '../context/AudioContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { Play, Pause } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 
 export const TrackCard: React.FC<{ track: Track; index: number }> = ({ track, index }) => {
-  const { currentTrack, isPlaying, play, pause } = useAudio();
+  const { currentTrack, isPlaying, play, pause } = useAudioMain();
   const isCurrent = currentTrack?.id === track.id;
   const coverImage = resolveCoverImageUrl(track);
 
