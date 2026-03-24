@@ -1,5 +1,6 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { Link } from 'react-router-dom';
+import clsx from 'clsx';
 import { useTrackPageUi } from '../context/TrackPageUiContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { useTrackPagePlayback } from '../hooks/useTrackPagePlayback';
@@ -8,9 +9,24 @@ import { TrackPageIllustrationLayout } from './TrackPageIllustrationLayout';
 import { TrackPagePatternMenu } from './TrackPagePatternMenu';
 import { ChevronLeft, Link2 } from 'lucide-react';
 
+const ILLUSTRATION_HERO_SRC = '/track-ui/character-duo.png';
+
+function preloadImageUrl(url: string) {
+  if (!url) return;
+  const img = new Image();
+  img.src = url;
+}
+
 export const TrackPage: React.FC = () => {
   const { pattern } = useTrackPageUi();
   const m = useTrackPagePlayback();
+
+  useEffect(() => {
+    if (!m.track) return;
+    const cover = resolveCoverImageUrl(m.track);
+    preloadImageUrl(cover);
+    preloadImageUrl(ILLUSTRATION_HERO_SRC);
+  }, [m.track]);
 
   if (m.isLoading) {
     return (
@@ -38,6 +54,13 @@ export const TrackPage: React.FC = () => {
     volume: m.volume,
     onVolumeBarClick: m.onVolumeBarClick,
   };
+
+  const panelClass = (active: boolean) =>
+    clsx(
+      'absolute inset-0 overflow-x-hidden overflow-y-auto',
+      'transition-opacity duration-200 ease-out motion-reduce:transition-none',
+      active ? 'z-10 opacity-100' : 'pointer-events-none z-0 opacity-0'
+    );
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-zen-bg font-body text-zen-mist selection:bg-zen-accent/30">
@@ -69,11 +92,22 @@ export const TrackPage: React.FC = () => {
         </button>
       </div>
 
-      {pattern === 'vinyl' ? (
-        <TrackPageVinylLayout {...layoutProps} />
-      ) : (
-        <TrackPageIllustrationLayout {...layoutProps} />
-      )}
+      <div className="relative isolate z-10 min-h-[calc(100dvh-7rem)] w-full">
+        <div
+          className={panelClass(pattern === 'vinyl')}
+          aria-hidden={pattern !== 'vinyl'}
+          inert={pattern !== 'vinyl'}
+        >
+          <TrackPageVinylLayout {...layoutProps} />
+        </div>
+        <div
+          className={panelClass(pattern === 'illustration')}
+          aria-hidden={pattern !== 'illustration'}
+          inert={pattern !== 'illustration'}
+        >
+          <TrackPageIllustrationLayout {...layoutProps} />
+        </div>
+      </div>
 
       <div className="pointer-events-none fixed inset-0 z-[5] shadow-[inset_0_0_120px_rgba(0,0,0,0.5)]" />
     </div>
