@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import type { Track } from '../context/AudioContext';
 import {
   createAuthHeaders,
@@ -22,6 +22,7 @@ import {
 import { formatBytes } from '../admin/formatBytes';
 import { getDriveAccessTokenForUpload, normalizeEmail } from '../admin/googleIdentity';
 import type { BrowserUploadSession, DriveStatusResponse, GoogleUploadConfigResponse } from '../admin/types';
+import { parseMp3Metadata } from '../admin/parseMp3Id3';
 
 export const Admin: React.FC = () => {
   const [title, setTitle] = useState('');
@@ -31,6 +32,11 @@ export const Admin: React.FC = () => {
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [adminSecret, setAdminSecret] = useState('');
+  const [id3Loading, setId3Loading] = useState(false);
+
+  /** 画像ファイル入力でユーザーが選んだあとは、MP3 の ID3 ジャケで上書きしない */
+  const coverChosenManuallyRef = useRef(false);
+  const id3ParseGenRef = useRef(0);
 
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -92,6 +98,40 @@ export const Admin: React.FC = () => {
   useEffect(() => {
     refreshDriveStatus();
   }, [refreshDriveStatus]);
+
+  const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0] ?? null;
+    setAudioFile(file);
+    if (!file) {
+      return;
+    }
+
+    const gen = ++id3ParseGenRef.current;
+    setId3Loading(true);
+    void (async () => {
+      try {
+        const result = await parseMp3Metadata(file);
+        if (gen !== id3ParseGenRef.current) {
+          return;
+        }
+
+        setTitle((prev) => (prev.trim() === '' ? result.title ?? prev : prev));
+        setArtist((prev) => (prev.trim() === '' ? result.artist ?? prev : prev));
+
+        if (result.warning) {
+          setMessage(result.warning);
+        }
+
+        if (!coverChosenManuallyRef.current && result.coverFile) {
+          setImageFile(result.coverFile);
+        }
+      } finally {
+        if (gen === id3ParseGenRef.current) {
+          setId3Loading(false);
+        }
+      }
+    })();
+  };
 
   const handleCoverReplace = async (trackId: string, file: File) => {
     if (driveStatus?.configOk === false) {
@@ -231,6 +271,7 @@ export const Admin: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    const form = e.currentTarget;
 
     if (!audioFile || !title || !artist) {
       setMessage('必須項目（タイトル、アーティスト、MP3 ファイル）を入力してください。');
@@ -338,10 +379,10 @@ export const Admin: React.FC = () => {
       setTags('');
       setAudioFile(null);
       setImageFile(null);
+      coverChosenManuallyRef.current = false;
       setUploadProgress(100);
 
-      const fileInputs = e.currentTarget.querySelectorAll('input[type="file"]') as NodeListOf<HTMLInputElement>;
-      fileInputs.forEach((input) => {
+      form.querySelectorAll<HTMLInputElement>('input[type="file"]').forEach((input) => {
         input.value = '';
       });
 
@@ -499,11 +540,14 @@ export const Admin: React.FC = () => {
             <input
               type="file"
               accept=".mp3,audio/mpeg,audio/mp3"
-              onChange={(e) => setAudioFile(e.target.files?.[0] || null)}
+              onChange={handleAudioFileChange}
               className="w-full bg-black/50 border border-white/10 rounded p-3 text-white"
               required
               disabled={isUploading}
             />
+            {id3Loading && (
+              <p className="mt-2 text-xs text-white/45">ID3 タグを読み込み中…</p>
+            )}
           </div>
 
           <div>
@@ -513,7 +557,11 @@ export const Admin: React.FC = () => {
             <input
               type="file"
               accept="image/jpeg,image/png,image/webp"
-              onChange={(e) => setImageFile(e.target.files?.[0] || null)}
+              onChange={(e) => {
+                const next = e.target.files?.[0] ?? null;
+                coverChosenManuallyRef.current = Boolean(next);
+                setImageFile(next);
+              }}
               className="w-full bg-black/50 border border-white/10 rounded p-3 text-white"
               disabled={isUploading}
             />

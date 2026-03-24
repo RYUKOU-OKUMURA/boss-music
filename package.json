@@ -26,6 +26,7 @@
     "googleapis": "^171.4.0",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
+    "music-metadata": "^11.12.3",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.13.1",
