@@ -171,9 +171,10 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         const source = ctx.createMediaElementSource(audio);
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.38;
-        analyser.minDecibels = -88;
-        analyser.maxDecibels = -22;
+        analyser.smoothingTimeConstant = 0.22;
+        /** 狭い範囲だと弱い高音が byte 上 0 に寄り、右側バーが動かないように見えやすい */
+        analyser.minDecibels = -100;
+        analyser.maxDecibels = -30;
 
         source.connect(analyser);
         analyser.connect(ctx.destination);

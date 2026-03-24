@@ -23,14 +23,18 @@ export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
   isPlaying,
   spectrumPanelActive = true,
 }) => {
-  const { audioAnalyserRef } = useAudio();
+  const { audioAnalyserRef, isPlaying: audioIsPlaying } = useAudio();
 
   return (
     <div className="relative flex w-full flex-col items-center justify-start px-6 py-6 pb-12 md:py-8">
       <div className="w-full max-w-[min(100%,36rem)]">
+        {/*
+          Analyser はグローバルな audio 要素に接続済み。isCurrent && isPlaying だと
+          トラック同期の一瞬や状態のずれでアイドル描画になり、右側が動かないように見えることがある。
+        */}
         <SpectrumVisualizer
           analyserRef={audioAnalyserRef}
-          isPlaying={isCurrent && isPlaying}
+          isPlaying={audioIsPlaying}
           panelActive={spectrumPanelActive}
         />
 

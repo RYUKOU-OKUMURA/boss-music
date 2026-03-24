@@ -2,8 +2,9 @@ import React, { useEffect, useRef, type RefObject } from 'react';
 
 const BAR_COUNT = 48;
 const IDLE_LEVEL = 0.04;
-/** <1: 横軸で低音側を広く・高音側を圧縮（動きの少ない帯の見え方を抑える） */
-const FREQ_AXIS_EXP = 0.48;
+/** Retina で canvas バックバッファを抑え、本番の GPU/帯域負荷を下げる */
+const SPECTRUM_CANVAS_DPR_MAX = 1.5;
+const BAR_SEGMENTS = 8;
 
 interface SpectrumVisualizerProps {
   analyserRef: RefObject<AnalyserNode | null>;
@@ -24,6 +25,8 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
   const dataRef = useRef<Uint8Array | null>(null);
+  const isPlayingRef = useRef(isPlaying);
+  isPlayingRef.current = isPlaying;
 
   useEffect(() => {
     if (!panelActive) {
@@ -40,7 +43,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
     let cancelled = false;
 
     const resize = () => {
-      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const dpr = Math.min(window.devicePixelRatio || 1, SPECTRUM_CANVAS_DPR_MAX);
       const w = container.clientWidth;
       const h = container.clientHeight;
       if (w === 0 || h === 0) return;
@@ -69,18 +72,29 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
       const floorY = halfH + h * 0.08;
       const barAreaH = halfH * 0.92;
 
+      const playing = isPlayingRef.current;
       let levels: number[] = [];
-      if (analyser && isPlaying) {
+      if (analyser && playing) {
         const n = analyser.frequencyBinCount;
         if (!dataRef.current || dataRef.current.length !== n) {
           dataRef.current = new Uint8Array(n);
         }
         analyser.getByteFrequencyData(dataRef.current);
         const buf = dataRef.current;
-        const exp = FREQ_AXIS_EXP;
+        /**
+         * 線形ビン分割だと右端が Nyquist 近傍になり、圧縮音源では実質 0。
+         * 40Hz〜maxHz を均等に 48 本に割り、bin は sr/fft で Hz→index（右端は ~10–12kHz 帯）。
+         */
+        const sr = analyser.context.sampleRate;
+        const fft = analyser.fftSize;
+        const hzPerBin = sr / fft;
+        const minHz = 40;
+        const maxHz = Math.min(12000, sr * 0.45);
         for (let i = 0; i < BAR_COUNT; i++) {
-          const start = Math.min(n - 1, Math.floor(n * Math.pow(i / BAR_COUNT, exp)));
-          const end = Math.min(n, Math.max(start + 1, Math.ceil(n * Math.pow((i + 1) / BAR_COUNT, exp))));
+          const hzLo = minHz + ((maxHz - minHz) * i) / BAR_COUNT;
+          const hzHi = minHz + ((maxHz - minHz) * (i + 1)) / BAR_COUNT;
+          const start = Math.max(0, Math.min(n - 1, Math.floor(hzLo / hzPerBin)));
+          const end = Math.max(start + 1, Math.min(n, Math.ceil(hzHi / hzPerBin)));
           let sum = 0;
           for (let j = start; j < end; j++) sum += buf[j]!;
           levels.push(sum / (255 * (end - start)));
@@ -93,15 +107,14 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
         }
       }
 
-      // 低音帯にエネルギーが寄りがちなので、右側（高音）バーだけ軽くゲインアップ
-      if (analyser && isPlaying) {
-        const last = BAR_COUNT - 1;
-        for (let i = 0; i < BAR_COUNT; i++) {
-          const t = last > 0 ? i / last : 0;
-          const trebleGain = 1 + 0.28 * Math.pow(t, 1.1);
-          levels[i] = Math.min(1, levels[i]! * trebleGain);
-        }
-      }
+      /** 右寄りほど表示ゲイン（ピーク割りは max がノイズだと右が再び横一線になるため使わない） */
+      const lastIdx = BAR_COUNT - 1;
+      const displayAmp = (i: number) => {
+        const v = levels[i]!;
+        const idx = lastIdx > 0 ? i / lastIdx : 0;
+        const hf = 1 + 1.15 * Math.pow(idx, 1.25);
+        return Math.min(1, v * 1.4 * hf);
+      };
 
       ctx2d.clearRect(0, 0, w, h);
 
@@ -119,12 +132,12 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
 
       const margin = w * 0.14;
       const innerW = w * 0.72;
-      const axisExp = FREQ_AXIS_EXP;
       const gapPx = Math.max(0.45, w * 0.0035);
 
+      /** 横位置も線形（各バーが等幅で、右端が一本の横線に潰れない） */
       const barSlot = (i: number) => {
-        const xa = margin + innerW * Math.pow(i / BAR_COUNT, axisExp);
-        const xb = margin + innerW * Math.pow((i + 1) / BAR_COUNT, axisExp);
+        const xa = margin + (innerW * i) / BAR_COUNT;
+        const xb = margin + (innerW * (i + 1)) / BAR_COUNT;
         const rawW = xb - xa;
         const barW = Math.max(2, rawW - gapPx);
         const x = xa + gapPx * 0.35;
@@ -141,8 +154,9 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
 
         for (let i = 0; i < BAR_COUNT; i++) {
           const { x, barW } = barSlot(i);
-          const amp = Math.min(1, levels[i]! * 1.35);
-          const bh = barAreaH * (0.08 + amp * 0.92);
+          const raw = displayAmp(i);
+          const shaped = Math.pow(Math.max(raw, 1e-6), 0.42);
+          const bh = barAreaH * (0.012 + Math.min(1, shaped) * 0.988);
           const y = floorY - bh;
 
           const g = ctx2d.createLinearGradient(x, y + bh, x, y);
@@ -151,11 +165,11 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
           g.addColorStop(1, 'rgba(34, 211, 238, 0.98)');
 
           ctx2d.shadowColor = 'rgba(236, 72, 153, 0.55)';
-          ctx2d.shadowBlur = flip === 1 ? 14 : 8;
+          ctx2d.shadowBlur = flip === 1 ? 9 : 5;
           ctx2d.fillStyle = g;
-          const segH = Math.max(4, bh / 10);
+          const segH = Math.max(4, bh / BAR_SEGMENTS);
           let sy = y + bh - segH;
-          for (let s = 0; s < 10 && sy >= y - 0.5; s++) {
+          for (let s = 0; s < BAR_SEGMENTS && sy >= y - 0.5; s++) {
             const rw = barW * (0.92 + (s % 2) * 0.06);
             const rx = x + (barW - rw) / 2;
             const ry = sy;
@@ -194,7 +208,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
       cancelAnimationFrame(rafRef.current);
       ro.disconnect();
     };
-  }, [analyserRef, isPlaying, panelActive]);
+  }, [analyserRef, panelActive]);
 
   return (
     <div ref={containerRef} className={className ?? 'h-[min(52vh,22rem)] w-full max-w-[min(100%,36rem)]'}>
