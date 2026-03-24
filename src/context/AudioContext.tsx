@@ -171,7 +171,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         const source = ctx.createMediaElementSource(audio);
         const analyser = ctx.createAnalyser();
         analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = 0.65;
+        analyser.smoothingTimeConstant = 0.38;
         analyser.minDecibels = -88;
         analyser.maxDecibels = -22;
 

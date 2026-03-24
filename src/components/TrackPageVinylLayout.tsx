@@ -21,7 +21,7 @@ export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
   onVolumeBarClick,
 }) => {
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col items-center justify-center px-6 py-8">
+    <div className="relative flex w-full flex-col items-center justify-start px-6 py-6 pb-12 md:py-8">
       <VinylDisc isPlaying={isCurrent && isPlaying} coverImage={coverImageUrl} alt={track.title} />
 
       <div className="mt-12 max-w-2xl px-2 text-center md:mt-14">

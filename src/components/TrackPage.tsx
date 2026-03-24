@@ -1,6 +1,5 @@
 import React, { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import clsx from 'clsx';
 import { useTrackPageUi } from '../context/TrackPageUiContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { useTrackPagePlayback } from '../hooks/useTrackPagePlayback';
@@ -54,14 +53,8 @@ export const TrackPage: React.FC = () => {
     onSeekKeyDown: m.onSeekKeyDown,
     volume: m.volume,
     onVolumeBarClick: m.onVolumeBarClick,
+    spectrumPanelActive: pattern === 'spectrum',
   };
-
-  const panelClass = (active: boolean) =>
-    clsx(
-      'absolute inset-0 overflow-x-hidden overflow-y-auto',
-      'transition-opacity duration-200 ease-out motion-reduce:transition-none',
-      active ? 'z-10 opacity-100' : 'pointer-events-none z-0 opacity-0'
-    );
 
   return (
     <div className="relative min-h-screen overflow-x-hidden bg-zen-bg font-body text-zen-mist selection:bg-zen-accent/30">
@@ -93,28 +86,10 @@ export const TrackPage: React.FC = () => {
         </button>
       </div>
 
-      <div className="relative isolate z-10 min-h-[calc(100dvh-7rem)] w-full">
-        <div
-          className={panelClass(pattern === 'vinyl')}
-          aria-hidden={pattern !== 'vinyl'}
-          inert={pattern !== 'vinyl'}
-        >
-          <TrackPageVinylLayout {...layoutProps} />
-        </div>
-        <div
-          className={panelClass(pattern === 'illustration')}
-          aria-hidden={pattern !== 'illustration'}
-          inert={pattern !== 'illustration'}
-        >
-          <TrackPageIllustrationLayout {...layoutProps} />
-        </div>
-        <div
-          className={panelClass(pattern === 'spectrum')}
-          aria-hidden={pattern !== 'spectrum'}
-          inert={pattern !== 'spectrum'}
-        >
-          <TrackPageSpectrumLayout {...layoutProps} />
-        </div>
+      <div className="relative isolate z-10 flex min-h-[calc(100dvh-7rem)] w-full flex-col overflow-x-hidden overflow-y-auto">
+        {pattern === 'vinyl' ? <TrackPageVinylLayout {...layoutProps} /> : null}
+        {pattern === 'illustration' ? <TrackPageIllustrationLayout {...layoutProps} /> : null}
+        {pattern === 'spectrum' ? <TrackPageSpectrumLayout {...layoutProps} /> : null}
       </div>
 
       <div className="pointer-events-none fixed inset-0 z-[5] shadow-[inset_0_0_120px_rgba(0,0,0,0.5)]" />

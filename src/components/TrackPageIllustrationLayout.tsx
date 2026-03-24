@@ -23,8 +23,8 @@ export const TrackPageIllustrationLayout: React.FC<TrackPageLayoutProps> = ({
   isPlaying,
 }) => {
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col items-center justify-center px-6 py-8">
-      <div className="w-full max-w-[min(100%,30rem)]">
+    <div className="relative flex w-full flex-col items-center justify-start px-6 py-6 pb-12 md:py-8">
+      <div className="mx-auto w-full max-w-[min(100%,24rem,min(86vw,calc(100dvh-19rem)))]">
         <div className="overflow-hidden rounded-2xl border border-white/10 shadow-[0_24px_60px_rgba(0,0,0,0.55)] ring-1 ring-teal-500/15 md:rounded-3xl">
           <img
             src={HERO_SRC}

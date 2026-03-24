@@ -9,10 +9,10 @@ interface VinylDiscProps {
 /** 黒レコード＋中央ジャケ＋トーンアーム。再生中のみレコード部分が回転 */
 export const VinylDisc: React.FC<VinylDiscProps> = ({ isPlaying, coverImage, alt }) => {
   return (
-    <div className="relative mx-auto flex h-[min(92vw,30rem)] w-[min(92vw,30rem)] max-w-[100%] items-center justify-center md:h-[30rem] md:w-[30rem]">
-      {/* トーンアーム（回転しない） */}
+    <div className="relative mx-auto flex aspect-square w-[min(86vw,24rem,min(76vw,calc(100dvh-17rem)))] max-w-full shrink-0 items-center justify-center md:w-[min(24rem,calc(100dvh-16rem))]">
+      {/* トーンアーム（回転しない・ディスク縮小に合わせて比例） */}
       <svg
-        className="pointer-events-none absolute -right-1 top-2 z-30 h-[14rem] w-[11rem] drop-shadow-[0_4px_12px_rgba(0,0,0,0.6)] md:-right-2 md:top-3 md:h-[16rem] md:w-[12.5rem]"
+        className="pointer-events-none absolute -right-1 top-2 z-30 h-[11rem] w-[8.75rem] drop-shadow-[0_4px_12px_rgba(0,0,0,0.6)] md:-right-2 md:top-3 md:h-[13rem] md:w-[10.25rem]"
         viewBox="0 0 120 140"
         fill="none"
         xmlns="http://www.w3.org/2000/svg"

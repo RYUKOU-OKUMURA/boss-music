@@ -16,4 +16,6 @@ export interface TrackPageLayoutProps {
   onSeekKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   volume: number;
   onVolumeBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  /** スペクトラムパターンが前面のときだけ true（可視化の RAF を制御する用途） */
+  spectrumPanelActive?: boolean;
 }

@@ -21,13 +21,18 @@ export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
   onVolumeBarClick,
   isCurrent,
   isPlaying,
+  spectrumPanelActive = true,
 }) => {
   const { audioAnalyserRef } = useAudio();
 
   return (
-    <div className="relative flex h-full min-h-0 w-full flex-col items-center justify-center px-6 py-8">
+    <div className="relative flex w-full flex-col items-center justify-start px-6 py-6 pb-12 md:py-8">
       <div className="w-full max-w-[min(100%,36rem)]">
-        <SpectrumVisualizer analyserRef={audioAnalyserRef} isPlaying={isCurrent && isPlaying} />
+        <SpectrumVisualizer
+          analyserRef={audioAnalyserRef}
+          isPlaying={isCurrent && isPlaying}
+          panelActive={spectrumPanelActive}
+        />
 
         <div className="mt-8 text-center md:mt-10">
           <h1 className="text-2xl font-light tracking-tight text-white md:text-3xl">{track.title}</h1>

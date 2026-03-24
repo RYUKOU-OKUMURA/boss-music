@@ -8,6 +8,8 @@ const FREQ_AXIS_EXP = 0.48;
 interface SpectrumVisualizerProps {
   analyserRef: RefObject<AnalyserNode | null>;
   isPlaying: boolean;
+  /** false のときは描画ループを開始しない（非表示パネルでの無駄な RAF を防ぐ） */
+  panelActive?: boolean;
   className?: string;
 }
 
@@ -15,6 +17,7 @@ interface SpectrumVisualizerProps {
 export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
   analyserRef,
   isPlaying,
+  panelActive = true,
   className,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -23,6 +26,10 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
   const dataRef = useRef<Uint8Array | null>(null);
 
   useEffect(() => {
+    if (!panelActive) {
+      return () => {};
+    }
+
     const container = containerRef.current;
     const canvas = canvasRef.current;
     if (!container || !canvas) return;
@@ -187,7 +194,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
       cancelAnimationFrame(rafRef.current);
       ro.disconnect();
     };
-  }, [analyserRef, isPlaying]);
+  }, [analyserRef, isPlaying, panelActive]);
 
   return (
     <div ref={containerRef} className={className ?? 'h-[min(52vh,22rem)] w-full max-w-[min(100%,36rem)]'}>
