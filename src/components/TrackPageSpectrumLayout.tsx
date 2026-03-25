@@ -1,22 +1,17 @@
 import React from 'react';
 import { Play, Pause, Volume2, SkipBack, SkipForward } from 'lucide-react';
 import { useAudioMain } from '../context/AudioContext';
-import { formatTrackTime } from '../hooks/useTrackPagePlayback';
 import type { TrackPageLayoutProps } from './trackPageLayoutTypes';
 import { SpectrumVisualizer } from './SpectrumVisualizer';
+import { TrackSeekRow } from './TrackSeekRow';
 
 /** 周波数バー（スペクトラム）ヒーロー + 既存コントロール */
 export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
   track,
   coverImageUrl: _coverImageUrl,
-  displayTime,
-  displayDuration,
-  progress,
   canChangeTrack,
   onPlayPause,
   goAdjacentTrack,
-  onSeekBarClick,
-  onSeekKeyDown,
   volume,
   onVolumeBarClick,
   isCurrent,
@@ -50,27 +45,7 @@ export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
         ) : null}
       </div>
 
-      <div className="mt-10 w-full max-w-md md:max-w-lg">
-        <div
-          role="slider"
-          tabIndex={0}
-          aria-valuenow={Math.round(progress)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          className="group relative h-0.5 w-full cursor-pointer bg-white/15"
-          onClick={onSeekBarClick}
-          onKeyDown={onSeekKeyDown}
-        >
-          <div
-            className="absolute inset-y-0 left-0 bg-gradient-to-r from-fuchsia-400/90 to-cyan-300/90 transition-[width] duration-150"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <div className="mt-3 flex justify-between font-mono text-xs tabular-nums text-white/35 md:text-sm">
-          <span>{formatTrackTime(displayTime)}</span>
-          <span>{formatTrackTime(displayDuration)}</span>
-        </div>
-      </div>
+      <TrackSeekRow variant="spectrum" isCurrent={isCurrent} className="mt-10 w-full max-w-md md:max-w-lg" />
 
       <div className="mt-10 flex items-center justify-center gap-10 md:gap-14">
         <button

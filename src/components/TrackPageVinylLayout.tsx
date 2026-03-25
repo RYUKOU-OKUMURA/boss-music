@@ -1,22 +1,17 @@
 import React from 'react';
 import { VinylDisc } from './VinylDisc';
 import { Play, Pause, Volume2, SkipBack, SkipForward } from 'lucide-react';
-import { formatTrackTime } from '../hooks/useTrackPagePlayback';
 import type { TrackPageLayoutProps } from './trackPageLayoutTypes';
+import { TrackSeekRow } from './TrackSeekRow';
 
 export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
   track,
   coverImageUrl,
   isCurrent,
   isPlaying,
-  displayTime,
-  displayDuration,
-  progress,
   canChangeTrack,
   onPlayPause,
   goAdjacentTrack,
-  onSeekBarClick,
-  onSeekKeyDown,
   volume,
   onVolumeBarClick,
 }) => {
@@ -36,27 +31,7 @@ export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
         ) : null}
       </div>
 
-      <div className="mt-12 w-full max-w-md md:max-w-lg">
-        <div
-          role="slider"
-          tabIndex={0}
-          aria-valuenow={Math.round(progress)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          className="group relative h-0.5 w-full cursor-pointer bg-white/20"
-          onClick={onSeekBarClick}
-          onKeyDown={onSeekKeyDown}
-        >
-          <div
-            className="absolute inset-y-0 left-0 bg-white transition-[width] duration-150"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <div className="mt-3 flex justify-between font-mono text-xs tabular-nums text-white/40 md:text-sm">
-          <span>{formatTrackTime(displayTime)}</span>
-          <span>{formatTrackTime(displayDuration)}</span>
-        </div>
-      </div>
+      <TrackSeekRow variant="vinyl" isCurrent={isCurrent} />
 
       <div className="mt-12 flex items-center justify-center gap-10 md:gap-14">
         <button

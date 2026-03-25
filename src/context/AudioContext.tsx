@@ -79,6 +79,11 @@ export const useAudioMain = (): AudioMainContextType => {
   return main;
 };
 
+/** 再生位置のみ購読（シークバー等）。Track ページのヘッダー・背景の再レンダーを避けるために分離 */
+export const useAudioTime = (): number => {
+  return useContext(AudioTimeContext);
+};
+
 export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) => {
   const [tracks, setTracks] = useState<Track[]>([]);
   const [isLoading, setIsLoading] = useState(true);

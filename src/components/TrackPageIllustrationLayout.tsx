@@ -1,7 +1,7 @@
 import React from 'react';
 import { Play, Pause, Volume2, SkipBack, SkipForward } from 'lucide-react';
-import { formatTrackTime } from '../hooks/useTrackPagePlayback';
 import type { TrackPageLayoutProps } from './trackPageLayoutTypes';
+import { TrackSeekRow } from './TrackSeekRow';
 
 const HERO_SRC = '/track-ui/character-duo.png';
 
@@ -9,14 +9,9 @@ const HERO_SRC = '/track-ui/character-duo.png';
 export const TrackPageIllustrationLayout: React.FC<TrackPageLayoutProps> = ({
   track,
   coverImageUrl: _coverImageUrl,
-  displayTime,
-  displayDuration,
-  progress,
   canChangeTrack,
   onPlayPause,
   goAdjacentTrack,
-  onSeekBarClick,
-  onSeekKeyDown,
   volume,
   onVolumeBarClick,
   isCurrent,
@@ -46,27 +41,7 @@ export const TrackPageIllustrationLayout: React.FC<TrackPageLayoutProps> = ({
         ) : null}
       </div>
 
-      <div className="mt-12 w-full max-w-md md:max-w-lg">
-        <div
-          role="slider"
-          tabIndex={0}
-          aria-valuenow={Math.round(progress)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          className="group relative h-0.5 w-full cursor-pointer bg-white/15"
-          onClick={onSeekBarClick}
-          onKeyDown={onSeekKeyDown}
-        >
-          <div
-            className="absolute inset-y-0 left-0 bg-teal-300/80 transition-[width] duration-150"
-            style={{ width: `${progress}%` }}
-          />
-        </div>
-        <div className="mt-3 flex justify-between font-mono text-xs tabular-nums text-white/35 md:text-sm">
-          <span>{formatTrackTime(displayTime)}</span>
-          <span>{formatTrackTime(displayDuration)}</span>
-        </div>
-      </div>
+      <TrackSeekRow variant="illustration" isCurrent={isCurrent} />
 
       <div className="mt-12 flex items-center justify-center gap-10 md:gap-14">
         <button

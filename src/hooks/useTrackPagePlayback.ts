@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
-import { useAudio } from '../context/AudioContext';
+import { useAudioMain } from '../context/AudioContext';
 import type { Track } from '../context/AudioContext';
 
 export function formatTrackTime(time: number) {
@@ -16,9 +16,6 @@ export interface UseTrackPagePlaybackResult {
   isLoading: boolean;
   isCurrent: boolean;
   isPlaying: boolean;
-  displayTime: number;
-  displayDuration: number;
-  progress: number;
   canChangeTrack: boolean;
   volume: number;
   shareFeedback: 'idle' | 'copied';
@@ -26,8 +23,6 @@ export interface UseTrackPagePlaybackResult {
   goAdjacentTrack: (delta: -1 | 1) => void;
   handleShare: () => Promise<void>;
   onPlayPause: () => void;
-  onSeekBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
-  onSeekKeyDown: (e: React.KeyboardEvent<HTMLDivElement>) => void;
   onVolumeBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
 }
 
@@ -41,12 +36,9 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     play,
     pause,
     isLoading,
-    currentTime,
-    duration,
-    seek,
     volume,
     setVolume,
-  } = useAudio();
+  } = useAudioMain();
   const [shareFeedback, setShareFeedback] = useState<'idle' | 'copied'>('idle');
 
   const trackIndex = tracks.findIndex((t) => t.id === id);
@@ -117,9 +109,6 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   }, [track?.title]);
 
   const isCurrent = currentTrackIndex === trackIndex;
-  const displayTime = isCurrent ? currentTime : 0;
-  const displayDuration = isCurrent && duration > 0 ? duration : 0;
-  const progress = displayDuration > 0 ? (displayTime / displayDuration) * 100 : 0;
   const canChangeTrack = tracks.length > 1;
 
   const onPlayPause = useCallback(() => {
@@ -130,28 +119,6 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
       play(trackIndex);
     }
   }, [track, isCurrent, isPlaying, pause, play, trackIndex]);
-
-  const onSeekBarClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
-      if (!isCurrent || displayDuration <= 0) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const percent = (e.clientX - rect.left) / rect.width;
-      seek(percent * displayDuration);
-    },
-    [isCurrent, displayDuration, seek]
-  );
-
-  const onSeekKeyDown = useCallback(
-    (e: React.KeyboardEvent<HTMLDivElement>) => {
-      if (!isCurrent || displayDuration <= 0) return;
-      if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
-        e.preventDefault();
-        const delta = e.key === 'ArrowLeft' ? -5 : 5;
-        seek(Math.max(0, Math.min(displayDuration, displayTime + delta)));
-      }
-    },
-    [isCurrent, displayDuration, displayTime, seek]
-  );
 
   const onVolumeBarClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
@@ -168,9 +135,6 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     isLoading,
     isCurrent,
     isPlaying,
-    displayTime,
-    displayDuration,
-    progress,
     canChangeTrack,
     volume,
     shareFeedback,
@@ -178,8 +142,6 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     goAdjacentTrack,
     handleShare,
     onPlayPause,
-    onSeekBarClick,
-    onSeekKeyDown,
     onVolumeBarClick,
   };
 }

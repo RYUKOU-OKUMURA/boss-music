@@ -24,6 +24,7 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
   const containerRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const rafRef = useRef<number>(0);
+  const idleTimeoutRef = useRef<number>(0);
   const dataRef = useRef<Uint8Array | null>(null);
   const isPlayingRef = useRef(isPlaying);
   isPlayingRef.current = isPlaying;
@@ -58,13 +59,33 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
     ro.observe(container);
     resize();
 
+    /** 約 30fps（二重 rAF）＋バックグラウンドではタイマーに切り替えてメイン負荷を抑える */
+    const scheduleDraw = () => {
+      if (cancelled) return;
+      if (document.hidden) {
+        if (idleTimeoutRef.current) window.clearTimeout(idleTimeoutRef.current);
+        idleTimeoutRef.current = window.setTimeout(() => {
+          idleTimeoutRef.current = 0;
+          scheduleDraw();
+        }, 400);
+        return;
+      }
+      rafRef.current = requestAnimationFrame(() => {
+        if (cancelled) return;
+        rafRef.current = requestAnimationFrame(() => {
+          if (cancelled) return;
+          drawFrame();
+        });
+      });
+    };
+
     const drawFrame = () => {
       if (cancelled) return;
       const analyser = analyserRef.current;
       const w = container.clientWidth;
       const h = container.clientHeight;
       if (w === 0 || h === 0) {
-        rafRef.current = requestAnimationFrame(drawFrame);
+        scheduleDraw();
         return;
       }
 
@@ -198,13 +219,14 @@ export const SpectrumVisualizer: React.FC<SpectrumVisualizerProps> = ({
       drawBars(1, 1);
       drawBars(-1, 0.22);
 
-      rafRef.current = requestAnimationFrame(drawFrame);
+      scheduleDraw();
     };
 
-    rafRef.current = requestAnimationFrame(drawFrame);
+    scheduleDraw();
 
     return () => {
       cancelled = true;
+      if (idleTimeoutRef.current) window.clearTimeout(idleTimeoutRef.current);
       cancelAnimationFrame(rafRef.current);
       ro.disconnect();
     };

@@ -43,14 +43,9 @@ export const TrackPage: React.FC = () => {
     coverImageUrl: resolveCoverImageUrl(m.track),
     isCurrent: m.isCurrent,
     isPlaying: m.isPlaying,
-    displayTime: m.displayTime,
-    displayDuration: m.displayDuration,
-    progress: m.progress,
     canChangeTrack: m.canChangeTrack,
     onPlayPause: m.onPlayPause,
     goAdjacentTrack: m.goAdjacentTrack,
-    onSeekBarClick: m.onSeekBarClick,
-    onSeekKeyDown: m.onSeekKeyDown,
     volume: m.volume,
     onVolumeBarClick: m.onVolumeBarClick,
     spectrumPanelActive: pattern === 'spectrum',
@@ -60,7 +55,7 @@ export const TrackPage: React.FC = () => {
     <div className="relative min-h-screen overflow-x-hidden bg-zen-bg font-body text-zen-mist selection:bg-zen-accent/30">
       <div className="pointer-events-none fixed inset-0 z-0 landscape-gradient">
         <div className="fog-layer" />
-        <div className="absolute inset-0 bg-[url('https://www.transparenttextures.com/patterns/carbon-fibre.png')] opacity-[0.03] mix-blend-overlay" />
+        <div className="absolute inset-0 bg-[url('/textures/carbon-fibre.png')] opacity-[0.03] mix-blend-overlay" />
       </div>
 
       <Link
