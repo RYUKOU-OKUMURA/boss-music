@@ -932,6 +932,16 @@ function applyGoogleHeaders(res, headers, status) {
 
 // server/routes/media.ts
 var mediaRouter = Router4();
+function corsMedia(req, res, next) {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
+  if (req.method === "OPTIONS") {
+    res.status(204).end();
+    return;
+  }
+  next();
+}
+mediaRouter.use(corsMedia);
 mediaRouter.get(
   "/media/audio/:fileId",
   asyncHandler(async (req, res) => {

@@ -353,6 +353,15 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       const src = await resolveAudioSource(track.id, streamUrl);
       if (cancelled || !audioRef.current) return;
 
+      let srcOrigin = '';
+      try {
+        srcOrigin = new URL(src, window.location.href).origin;
+      } catch {
+        srcOrigin = 'invalid';
+      }
+      const pageOrigin = window.location.origin;
+      const isCrossOrigin = srcOrigin !== 'invalid' && srcOrigin !== pageOrigin;
+
       if (blobUrlRef.current) {
         revokeObjectUrl(blobUrlRef.current);
         blobUrlRef.current = null;
@@ -361,8 +370,15 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
         blobUrlRef.current = src;
       }
 
-      audioRef.current.src = src;
-      audioRef.current.load();
+      const audioEl = audioRef.current;
+      if (isCrossOrigin) {
+        audioEl.crossOrigin = 'anonymous';
+      } else {
+        audioEl.crossOrigin = null;
+      }
+
+      audioEl.src = src;
+      audioEl.load();
 
       if (isPlayingRef.current) {
         const playPromise = audioRef.current.play();
