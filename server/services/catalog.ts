@@ -2,7 +2,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import { Readable } from 'stream';
 import type { drive_v3 } from 'googleapis';
-import { KV_CATALOG_FILE_ID } from './kvKeys';
+import { KV_CATALOG_CACHE, KV_CATALOG_FILE_ID } from './kvKeys';
 import { getRedis, isRedisConfigured } from './redisStore';
 import { assertPersistentStorageConfigured } from './runtimeEnv';
 
@@ -12,6 +12,8 @@ export const CATALOG_FILENAME = 'boss-music-catalog.json';
 
 const catalogIdPath = () =>
   path.resolve(process.cwd(), process.env.CATALOG_ID_PATH || 'data/catalog-file-id.txt');
+const catalogCachePath = () =>
+  path.resolve(process.cwd(), process.env.CATALOG_CACHE_PATH || 'data/catalog-cache.json');
 
 export interface TrackRow {
   id: string;
@@ -30,6 +32,11 @@ export interface CatalogRoot {
   version: number;
   updatedAt: string;
   tracks: TrackRow[];
+}
+
+interface CatalogCachePayload {
+  fileId: string;
+  catalog: CatalogRoot;
 }
 
 export function emptyCatalog(): CatalogRoot {
@@ -69,6 +76,48 @@ async function writeStoredCatalogFileId(id: string): Promise<void> {
   const p = catalogIdPath();
   await fs.mkdir(path.dirname(p), { recursive: true });
   await fs.writeFile(p, id, 'utf8');
+}
+
+async function readStoredCatalogCache(): Promise<CatalogCachePayload | null> {
+  if (isRedisConfigured()) {
+    try {
+      const raw = await getRedis().get(KV_CATALOG_CACHE);
+      if (raw == null) return null;
+      const parsed =
+        typeof raw === 'string' ? (JSON.parse(raw) as CatalogCachePayload) : (raw as CatalogCachePayload);
+      if (!parsed?.fileId || !parsed.catalog || !Array.isArray(parsed.catalog.tracks)) return null;
+      if (typeof parsed.catalog.version !== 'number') parsed.catalog.version = 0;
+      return parsed;
+    } catch {
+      return null;
+    }
+  }
+  assertPersistentStorageConfigured();
+  try {
+    const raw = await fs.readFile(catalogCachePath(), 'utf8');
+    const parsed = JSON.parse(raw) as CatalogCachePayload;
+    if (!parsed?.fileId || !parsed.catalog || !Array.isArray(parsed.catalog.tracks)) return null;
+    if (typeof parsed.catalog.version !== 'number') parsed.catalog.version = 0;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function readCachedCatalog(): Promise<CatalogCachePayload | null> {
+  return readStoredCatalogCache();
+}
+
+async function writeStoredCatalogCache(payload: CatalogCachePayload): Promise<void> {
+  const body = JSON.stringify(payload);
+  if (isRedisConfigured()) {
+    await getRedis().set(KV_CATALOG_CACHE, body);
+    return;
+  }
+  assertPersistentStorageConfigured();
+  const p = catalogCachePath();
+  await fs.mkdir(path.dirname(p), { recursive: true });
+  await fs.writeFile(p, body, 'utf8');
 }
 
 /** Find or create catalog file in Drive folder. */
@@ -131,12 +180,21 @@ async function downloadCatalogJson(drive: DriveClient, fileId: string): Promise<
   return parsed;
 }
 
-export async function readCatalog(drive: DriveClient, folderId: string): Promise<{
+export async function readCatalog(
+  drive: DriveClient,
+  folderId: string,
+  options: { preferCache?: boolean } = {}
+): Promise<{
   catalog: CatalogRoot;
   fileId: string;
 }> {
+  if (options.preferCache !== false) {
+    const cached = await readStoredCatalogCache();
+    if (cached) return cached;
+  }
   const fileId = await ensureCatalogFile(drive, folderId);
   const catalog = await downloadCatalogJson(drive, fileId);
+  await writeStoredCatalogCache({ fileId, catalog });
   return { catalog, fileId };
 }
 
@@ -152,6 +210,7 @@ export async function writeCatalog(drive: DriveClient, fileId: string, catalog: 
     },
     supportsAllDrives: true,
   });
+  await writeStoredCatalogCache({ fileId, catalog });
 }
 
 export async function addTrackAndSave(
@@ -159,7 +218,7 @@ export async function addTrackAndSave(
   folderId: string,
   track: TrackRow
 ): Promise<CatalogRoot> {
-  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const { catalog, fileId } = await readCatalog(drive, folderId, { preferCache: false });
   const maxOrder = catalog.tracks.reduce((m, t) => Math.max(m, t.order ?? 0), -1);
   track.order = maxOrder + 1;
   catalog.tracks.push(track);
@@ -180,7 +239,7 @@ export async function removeTrackById(
   folderId: string,
   id: string
 ): Promise<{ catalog: CatalogRoot; removed: TrackRow }> {
-  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const { catalog, fileId } = await readCatalog(drive, folderId, { preferCache: false });
   const idx = catalog.tracks.findIndex((t) => t.id === id);
   if (idx === -1) {
     throw makeTrackNotFoundError();
@@ -199,7 +258,7 @@ export async function updateTrackCoverById(
   id: string,
   driveCoverFileId: string | undefined
 ): Promise<{ catalog: CatalogRoot; track: TrackRow }> {
-  const { catalog, fileId } = await readCatalog(drive, folderId);
+  const { catalog, fileId } = await readCatalog(drive, folderId, { preferCache: false });
   const track = catalog.tracks.find((t) => t.id === id);
   if (!track) {
     throw makeTrackNotFoundError();

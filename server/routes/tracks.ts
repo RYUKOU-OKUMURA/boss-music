@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getDrive, getDriveFolderId } from '../services/driveClient';
-import { readCatalog } from '../services/catalog';
+import { readCachedCatalog, readCatalog } from '../services/catalog';
 import { asyncHandler } from '../utils/asyncHandler';
 import { toPublicTrack } from '../utils/trackPublic';
 
@@ -10,8 +10,19 @@ tracksRouter.get(
   '/tracks',
   asyncHandler(async (_req, res) => {
     try {
-      const drive = await getDrive();
+      const cached = await readCachedCatalog();
+      if (cached) {
+        const tracks = [...cached.catalog.tracks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+        res.json({
+          version: cached.catalog.version,
+          updatedAt: cached.catalog.updatedAt,
+          tracks: tracks.map(toPublicTrack),
+        });
+        return;
+      }
+
       const folderId = getDriveFolderId();
+      const drive = await getDrive();
       const { catalog } = await readCatalog(drive, folderId);
       const tracks = [...catalog.tracks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
       res.json({
