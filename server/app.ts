@@ -2,9 +2,7 @@ import path from 'path';
 import express, { Request, Response, NextFunction, type Application } from 'express';
 import cookieParser from 'cookie-parser';
 import { tracksRouter } from './routes/tracks';
-import { authRouter } from './routes/auth';
 import { adminRouter } from './routes/admin';
-import { mediaRouter } from './routes/media';
 import { healthRouter } from './routes/health';
 
 function mountApiRoutes(app: Application) {
@@ -12,9 +10,7 @@ function mountApiRoutes(app: Application) {
   app.use(express.json());
 
   app.use('/api', tracksRouter);
-  app.use('/api', authRouter);
   app.use('/api', adminRouter);
-  app.use('/api', mediaRouter);
   app.use('/api', healthRouter);
 }
 
@@ -26,11 +22,9 @@ function mountErrorHandler(app: Application) {
     const status =
       typed.code === 'UPLOAD_VALIDATION_FAILED'
         ? 400
-        : typed.code === 'NOT_CONNECTED' || typed.code === 'PERSISTENT_STORAGE_REQUIRED'
+        : typed.code === 'DB_NOT_CONFIGURED'
           ? 503
-          : typed.code === 'DRIVE_INIT_FAILED' || typed.code === 'DRIVE_AUTH_FAILED'
-            ? 502
-            : 500;
+          : 500;
     res.status(status).json({ error: err.message });
   });
 }

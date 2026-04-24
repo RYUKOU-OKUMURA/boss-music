@@ -5,321 +5,196 @@ import cookieParser from "cookie-parser";
 // server/routes/tracks.ts
 import { Router } from "express";
 
-// server/services/driveClient.ts
-import { google } from "googleapis";
-
-// server/services/tokenStore.ts
-import crypto from "crypto";
-import fs from "fs/promises";
-import path from "path";
-
-// server/services/kvKeys.ts
-var KV_REFRESH_TOKEN = "boss-music:refresh-token";
-var KV_CATALOG_FILE_ID = "boss-music:catalog-file-id";
-function oauthStateKey(state) {
-  return `boss-music:oauth-state:${state}`;
-}
-
-// server/services/redisStore.ts
-import { Redis } from "@upstash/redis";
-var client = null;
-function isRedisConfigured() {
-  return Boolean(process.env.UPSTASH_REDIS_REST_URL?.trim() && process.env.UPSTASH_REDIS_REST_TOKEN?.trim());
-}
-function getRedis() {
-  if (!isRedisConfigured()) {
-    throw new Error("UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are required for Redis");
-  }
-  if (!client) {
-    client = Redis.fromEnv();
-  }
-  return client;
-}
-
-// server/services/runtimeEnv.ts
-function isVercelRuntime() {
-  return process.env.VERCEL === "1" || Boolean(process.env.VERCEL_ENV?.trim());
-}
-function getPersistenceStatus() {
-  if (isRedisConfigured()) {
-    return { storage: "redis", configOk: true };
-  }
-  if (isVercelRuntime()) {
-    return {
-      storage: "local",
-      configOk: false,
-      reason: "Vercel \u672C\u756A\u3067\u306F Upstash Redis \u306E\u8A2D\u5B9A\u304C\u5FC5\u9808\u3067\u3059\u3002"
-    };
-  }
-  return { storage: "local", configOk: true };
-}
-function assertPersistentStorageConfigured() {
-  const status = getPersistenceStatus();
-  if (status.configOk) return status;
-  const err = new Error(status.reason || "Persistent storage is required");
-  err.code = "PERSISTENT_STORAGE_REQUIRED";
-  throw err;
-}
-
-// server/services/tokenStore.ts
-var ALGO = "aes-256-gcm";
-function getKey() {
-  const k = process.env.TOKEN_ENCRYPTION_KEY?.trim();
-  if (!k || k.length < 8) {
-    throw new Error("TOKEN_ENCRYPTION_KEY must be set (min 8 chars)");
-  }
-  return crypto.createHash("sha256").update(k, "utf8").digest();
-}
-function encrypt(plaintext) {
-  const key = getKey();
-  const iv = crypto.randomBytes(16);
-  const cipher = crypto.createCipheriv(ALGO, key, iv);
-  const enc = Buffer.concat([cipher.update(plaintext, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return [iv.toString("base64"), tag.toString("base64"), enc.toString("base64")].join(".");
-}
-function decrypt(payload) {
-  const key = getKey();
-  const [ivB64, tagB64, dataB64] = payload.split(".");
-  if (!ivB64 || !tagB64 || !dataB64) throw new Error("Invalid token payload");
-  const iv = Buffer.from(ivB64, "base64");
-  const tag = Buffer.from(tagB64, "base64");
-  const data = Buffer.from(dataB64, "base64");
-  const decipher = crypto.createDecipheriv(ALGO, key, iv);
-  decipher.setAuthTag(tag);
-  return Buffer.concat([decipher.update(data), decipher.final()]).toString("utf8");
-}
-var tokenPath = () => path.resolve(process.cwd(), process.env.DRIVE_TOKEN_PATH || "data/drive-tokens.enc");
-async function saveRefreshToken(refreshToken) {
-  const body = JSON.stringify({ refresh_token: refreshToken });
-  const enc = encrypt(body);
-  if (isRedisConfigured()) {
-    await getRedis().set(KV_REFRESH_TOKEN, enc);
-    return;
-  }
-  assertPersistentStorageConfigured();
-  const p = tokenPath();
-  await fs.mkdir(path.dirname(p), { recursive: true });
-  await fs.writeFile(p, enc, "utf8");
-}
-async function loadRefreshToken() {
-  if (isRedisConfigured()) {
-    try {
-      const enc = await getRedis().get(KV_REFRESH_TOKEN);
-      if (!enc || typeof enc !== "string") return null;
-      const json = JSON.parse(decrypt(enc));
-      return json.refresh_token ?? null;
-    } catch {
-      return null;
-    }
-  }
-  assertPersistentStorageConfigured();
-  try {
-    const enc = await fs.readFile(tokenPath(), "utf8");
-    const json = JSON.parse(decrypt(enc));
-    return json.refresh_token ?? null;
-  } catch {
-    return null;
-  }
-}
-
-// server/services/driveClient.ts
-var SCOPES = ["https://www.googleapis.com/auth/drive"];
-function createOAuth2Client() {
-  const clientId = process.env.GOOGLE_CLIENT_ID;
-  const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-  const redirectUri = process.env.OAUTH_REDIRECT_URI;
-  if (!clientId || !clientSecret || !redirectUri) {
-    throw new Error("GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, OAUTH_REDIRECT_URI are required");
-  }
-  return new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-}
-async function getOAuth2ClientForDrive() {
-  const oauth2 = createOAuth2Client();
-  const rt = await loadRefreshToken();
-  if (!rt) {
-    const err = new Error("Drive not connected");
-    err.code = "NOT_CONNECTED";
+// server/services/tracksDb.ts
+import { neon } from "@neondatabase/serverless";
+var schemaReady = null;
+function getSql() {
+  const url = process.env.DATABASE_URL?.trim();
+  if (!url) {
+    const err = new Error("DATABASE_URL is required");
+    err.code = "DB_NOT_CONFIGURED";
     throw err;
   }
-  oauth2.setCredentials({ refresh_token: rt });
-  return oauth2;
+  return neon(url);
 }
-async function getDrive() {
-  const auth = await getOAuth2ClientForDrive();
-  return google.drive({ version: "v3", auth });
+function dateOnly(value) {
+  if (value instanceof Date) return value.toISOString().split("T")[0] ?? value.toISOString();
+  return value.includes("T") ? value.split("T")[0] ?? value : value;
 }
-async function getConnectedDriveUser() {
-  const drive = await getDrive();
-  const response = await drive.about.get({
-    fields: "user(displayName,emailAddress)"
-  });
-  return {
-    displayName: response.data.user?.displayName ?? null,
-    emailAddress: response.data.user?.emailAddress ?? null
-  };
-}
-function getDriveFolderId() {
-  const id = process.env.GOOGLE_DRIVE_FOLDER_ID;
-  if (!id) throw new Error("GOOGLE_DRIVE_FOLDER_ID is required");
-  return id;
-}
-
-// server/services/catalog.ts
-import fs2 from "fs/promises";
-import path2 from "path";
-import { Readable } from "stream";
-var CATALOG_FILENAME = "boss-music-catalog.json";
-var catalogIdPath = () => path2.resolve(process.cwd(), process.env.CATALOG_ID_PATH || "data/catalog-file-id.txt");
-function emptyCatalog() {
-  return {
-    version: 0,
-    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    tracks: []
-  };
-}
-async function readStoredCatalogFileId() {
-  const env = process.env.GOOGLE_DRIVE_CATALOG_FILE_ID?.trim();
-  if (env) return env;
-  if (isRedisConfigured()) {
+function parseTags(value) {
+  if (Array.isArray(value)) return value.map((tag) => String(tag)).filter(Boolean);
+  if (typeof value === "string") {
     try {
-      const id = await getRedis().get(KV_CATALOG_FILE_ID);
-      return typeof id === "string" && id.trim() ? id.trim() : null;
+      const parsed = JSON.parse(value);
+      return Array.isArray(parsed) ? parsed.map((tag) => String(tag)).filter(Boolean) : [];
     } catch {
-      return null;
+      return [];
     }
   }
-  assertPersistentStorageConfigured();
-  try {
-    const raw = await fs2.readFile(catalogIdPath(), "utf8");
-    return raw.trim() || null;
-  } catch {
-    return null;
+  return [];
+}
+function toNumber(value) {
+  if (value === null) return void 0;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : void 0;
+}
+function mapTrack(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    artist: row.artist,
+    description: row.description ?? "",
+    createdAt: dateOnly(row.created_at),
+    tags: parseTags(row.tags),
+    playable: row.playable,
+    order: row.sort_order,
+    audioUrl: row.audio_url,
+    audioPath: row.audio_path,
+    audioSize: toNumber(row.audio_size) ?? 0,
+    audioContentType: row.audio_content_type,
+    ...row.cover_url ? { coverUrl: row.cover_url } : {},
+    ...row.cover_path ? { coverPath: row.cover_path } : {},
+    ...row.cover_size !== null ? { coverSize: toNumber(row.cover_size) ?? 0 } : {},
+    ...row.cover_content_type ? { coverContentType: row.cover_content_type } : {}
+  };
+}
+async function ensureTracksSchema() {
+  if (!schemaReady) {
+    const sql = getSql();
+    schemaReady = sql`
+      CREATE TABLE IF NOT EXISTS tracks (
+        id text PRIMARY KEY,
+        title text NOT NULL,
+        artist text NOT NULL,
+        description text,
+        created_at date NOT NULL DEFAULT CURRENT_DATE,
+        tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+        playable boolean NOT NULL DEFAULT true,
+        sort_order integer NOT NULL DEFAULT 0,
+        audio_url text NOT NULL,
+        audio_path text NOT NULL,
+        audio_size bigint NOT NULL,
+        audio_content_type text NOT NULL,
+        cover_url text,
+        cover_path text,
+        cover_size bigint,
+        cover_content_type text,
+        inserted_at timestamptz NOT NULL DEFAULT now(),
+        updated_at timestamptz NOT NULL DEFAULT now()
+      )
+    `.then(() => void 0);
   }
+  await schemaReady;
 }
-async function writeStoredCatalogFileId(id) {
-  if (isRedisConfigured()) {
-    await getRedis().set(KV_CATALOG_FILE_ID, id);
-    return;
+async function listTracks() {
+  await ensureTracksSchema();
+  const sql = getSql();
+  const rows = await sql`
+    SELECT *
+    FROM tracks
+    ORDER BY sort_order ASC, inserted_at ASC
+  `;
+  return rows.map(mapTrack);
+}
+async function addTrack(input) {
+  await ensureTracksSchema();
+  const sql = getSql();
+  const rows = await sql`
+    INSERT INTO tracks (
+      id,
+      title,
+      artist,
+      description,
+      created_at,
+      tags,
+      playable,
+      sort_order,
+      audio_url,
+      audio_path,
+      audio_size,
+      audio_content_type,
+      cover_url,
+      cover_path,
+      cover_size,
+      cover_content_type
+    )
+    VALUES (
+      ${input.id},
+      ${input.title},
+      ${input.artist},
+      ${input.description},
+      CURRENT_DATE,
+      ${JSON.stringify(input.tags)}::jsonb,
+      true,
+      (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM tracks),
+      ${input.audio.url},
+      ${input.audio.pathname},
+      ${input.audio.size},
+      ${input.audio.contentType},
+      ${input.cover?.url ?? null},
+      ${input.cover?.pathname ?? null},
+      ${input.cover?.size ?? null},
+      ${input.cover?.contentType ?? null}
+    )
+    RETURNING *
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("Failed to add track");
+  return mapTrack(row);
+}
+async function findTrackById(id) {
+  await ensureTracksSchema();
+  const sql = getSql();
+  const rows = await sql`
+    SELECT *
+    FROM tracks
+    WHERE id = ${id}
+    LIMIT 1
+  `;
+  return rows[0] ? mapTrack(rows[0]) : null;
+}
+async function updateTrackCoverById(id, cover) {
+  await ensureTracksSchema();
+  const before = await findTrackById(id);
+  if (!before) {
+    const err = new Error("Track not found");
+    err.code = "TRACK_NOT_FOUND";
+    throw err;
   }
-  assertPersistentStorageConfigured();
-  const p = catalogIdPath();
-  await fs2.mkdir(path2.dirname(p), { recursive: true });
-  await fs2.writeFile(p, id, "utf8");
+  const sql = getSql();
+  const rows = await sql`
+    UPDATE tracks
+    SET
+      cover_url = ${cover?.url ?? null},
+      cover_path = ${cover?.pathname ?? null},
+      cover_size = ${cover?.size ?? null},
+      cover_content_type = ${cover?.contentType ?? null},
+      updated_at = now()
+    WHERE id = ${id}
+    RETURNING *
+  `;
+  const row = rows[0];
+  if (!row) throw new Error("Failed to update track cover");
+  return {
+    track: mapTrack(row),
+    ...before.coverPath ? { oldCoverPath: before.coverPath } : {}
+  };
 }
-async function ensureCatalogFile(drive, folderId) {
-  let id = await readStoredCatalogFileId();
-  if (id) {
-    try {
-      await drive.files.get({ fileId: id, fields: "id", supportsAllDrives: true });
-      return id;
-    } catch {
-      id = null;
-    }
+async function removeTrackById(id) {
+  await ensureTracksSchema();
+  const sql = getSql();
+  const rows = await sql`
+    DELETE FROM tracks
+    WHERE id = ${id}
+    RETURNING *
+  `;
+  const row = rows[0];
+  if (!row) {
+    const err = new Error("Track not found");
+    err.code = "TRACK_NOT_FOUND";
+    throw err;
   }
-  const q = `'${folderId}' in parents and name = '${CATALOG_FILENAME}' and trashed = false`;
-  const list = await drive.files.list({
-    q,
-    fields: "files(id)",
-    supportsAllDrives: true,
-    includeItemsFromAllDrives: true,
-    pageSize: 5
-  });
-  const found = list.data.files?.[0]?.id;
-  if (found) {
-    await writeStoredCatalogFileId(found);
-    return found;
-  }
-  const empty = emptyCatalog();
-  const buf = Buffer.from(JSON.stringify(empty, null, 2), "utf8");
-  const created = await drive.files.create({
-    requestBody: {
-      name: CATALOG_FILENAME,
-      parents: [folderId],
-      mimeType: "application/json"
-    },
-    media: {
-      mimeType: "application/json",
-      body: Readable.from(buf)
-    },
-    fields: "id",
-    supportsAllDrives: true
-  });
-  const newId = created.data.id;
-  if (!newId) throw new Error("Failed to create catalog file");
-  await writeStoredCatalogFileId(newId);
-  return newId;
-}
-async function downloadCatalogJson(drive, fileId) {
-  const gRes = await drive.files.get(
-    { fileId, alt: "media", supportsAllDrives: true },
-    { responseType: "arraybuffer" }
-  );
-  const buf = Buffer.from(gRes.data);
-  const text = buf.toString("utf8");
-  const parsed = JSON.parse(text);
-  if (!Array.isArray(parsed.tracks)) parsed.tracks = [];
-  if (typeof parsed.version !== "number") parsed.version = 0;
-  return parsed;
-}
-async function readCatalog(drive, folderId) {
-  const fileId = await ensureCatalogFile(drive, folderId);
-  const catalog = await downloadCatalogJson(drive, fileId);
-  return { catalog, fileId };
-}
-async function writeCatalog(drive, fileId, catalog) {
-  catalog.version = (catalog.version ?? 0) + 1;
-  catalog.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
-  const buf = Buffer.from(JSON.stringify(catalog, null, 2), "utf8");
-  await drive.files.update({
-    fileId,
-    media: {
-      mimeType: "application/json",
-      body: Readable.from(buf)
-    },
-    supportsAllDrives: true
-  });
-}
-async function addTrackAndSave(drive, folderId, track) {
-  const { catalog, fileId } = await readCatalog(drive, folderId);
-  const maxOrder = catalog.tracks.reduce((m, t) => Math.max(m, t.order ?? 0), -1);
-  track.order = maxOrder + 1;
-  catalog.tracks.push(track);
-  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  await writeCatalog(drive, fileId, catalog);
-  return catalog;
-}
-function makeTrackNotFoundError() {
-  const err = new Error("Track not found");
-  err.code = "TRACK_NOT_FOUND";
-  return err;
-}
-async function removeTrackById(drive, folderId, id) {
-  const { catalog, fileId } = await readCatalog(drive, folderId);
-  const idx = catalog.tracks.findIndex((t) => t.id === id);
-  if (idx === -1) {
-    throw makeTrackNotFoundError();
-  }
-  const removed = catalog.tracks[idx];
-  catalog.tracks.splice(idx, 1);
-  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  await writeCatalog(drive, fileId, catalog);
-  return { catalog, removed };
-}
-async function updateTrackCoverById(drive, folderId, id, driveCoverFileId) {
-  const { catalog, fileId } = await readCatalog(drive, folderId);
-  const track = catalog.tracks.find((t) => t.id === id);
-  if (!track) {
-    throw makeTrackNotFoundError();
-  }
-  if (driveCoverFileId) {
-    track.driveCoverFileId = driveCoverFileId;
-  } else {
-    delete track.driveCoverFileId;
-  }
-  catalog.tracks.sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
-  await writeCatalog(drive, fileId, catalog);
-  return { catalog, track };
+  return mapTrack(row);
 }
 
 // server/utils/asyncHandler.ts
@@ -331,7 +206,6 @@ function asyncHandler(fn) {
 
 // server/utils/trackPublic.ts
 function toPublicTrack(t) {
-  const coverImage = t.driveCoverFileId ? `/api/media/image/${encodeURIComponent(t.driveCoverFileId)}` : "";
   return {
     id: t.id,
     title: t.title,
@@ -341,10 +215,8 @@ function toPublicTrack(t) {
     tags: t.tags,
     playable: t.playable,
     order: t.order,
-    driveAudioFileId: t.driveAudioFileId,
-    driveCoverFileId: t.driveCoverFileId,
-    audioUrl: `/api/media/audio/${encodeURIComponent(t.driveAudioFileId)}`,
-    coverImage
+    audioUrl: t.audioUrl,
+    coverImage: t.coverUrl ?? ""
   };
 }
 
@@ -354,18 +226,15 @@ tracksRouter.get(
   "/tracks",
   asyncHandler(async (_req, res) => {
     try {
-      const drive = await getDrive();
-      const folderId = getDriveFolderId();
-      const { catalog } = await readCatalog(drive, folderId);
-      const tracks = [...catalog.tracks].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const tracks = await listTracks();
       res.json({
-        version: catalog.version,
-        updatedAt: catalog.updatedAt,
+        version: 1,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
         tracks: tracks.map(toPublicTrack)
       });
     } catch (e) {
       const err = e;
-      if (err.code === "NOT_CONNECTED" || err.code === "PERSISTENT_STORAGE_REQUIRED") {
+      if (err.code === "DB_NOT_CONFIGURED") {
         res.status(503).json({ error: err.message, tracks: [] });
         return;
       }
@@ -374,11 +243,102 @@ tracksRouter.get(
   })
 );
 
-// server/routes/auth.ts
+// server/routes/admin.ts
 import { Router as Router2 } from "express";
+import { handleUpload } from "@vercel/blob/client";
+
+// server/services/blobUploads.ts
+import { del, head } from "@vercel/blob";
+var MAX_AUDIO_BYTES = 150 * 1024 * 1024;
+var MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+var AUDIO_TYPES = ["audio/mpeg", "audio/mp3"];
+var IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+function allowedContentTypes(kind) {
+  return kind === "audio" ? AUDIO_TYPES : IMAGE_TYPES;
+}
+function maxUploadBytes(kind) {
+  return kind === "audio" ? MAX_AUDIO_BYTES : MAX_IMAGE_BYTES;
+}
+function isAllowedContentType(kind, contentType) {
+  return allowedContentTypes(kind).includes(contentType.trim().toLowerCase());
+}
+function normalizeContentType(contentType) {
+  return String(contentType ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+}
+function parseUploadKind(value) {
+  if (value === "audio" || value === "image") return value;
+  const err = new Error("Invalid upload kind");
+  err.code = "UPLOAD_VALIDATION_FAILED";
+  throw err;
+}
+function validateBlobUpload(kind, payload) {
+  const url = String(payload.url ?? "").trim();
+  const pathname = String(payload.pathname ?? "").trim();
+  const contentType = normalizeContentType(payload.contentType);
+  const size = Number(payload.size);
+  if (!url || !pathname) {
+    throwUploadError("Blob upload metadata is incomplete.");
+  }
+  if (!url.startsWith("https://")) {
+    throwUploadError("Blob URL must be an HTTPS URL.");
+  }
+  if (!pathname.startsWith("tracks/")) {
+    throwUploadError("Blob pathname is outside the expected tracks/ folder.");
+  }
+  if (!Number.isFinite(size) || size <= 0) {
+    throwUploadError("Blob upload size is invalid.");
+  }
+  if (size > maxUploadBytes(kind)) {
+    throwUploadError(`${kind === "audio" ? "MP3" : "\u753B\u50CF"} is too large.`);
+  }
+  if (!isAllowedContentType(kind, contentType)) {
+    throwUploadError(`${kind === "audio" ? "MP3" : "\u753B\u50CF"} content type is not allowed.`);
+  }
+  return { url, pathname, size, contentType };
+}
+async function verifyBlobUpload(kind, payload) {
+  const validated = validateBlobUpload(kind, payload);
+  let metadata;
+  try {
+    metadata = await head(validated.pathname);
+  } catch {
+    throwUploadError("Uploaded blob was not found in this Blob store.");
+  }
+  const actualContentType = normalizeContentType(metadata.contentType);
+  if (metadata.url !== validated.url) {
+    throwUploadError("Blob URL does not match the uploaded pathname.");
+  }
+  if (metadata.size !== validated.size) {
+    throwUploadError("Blob size does not match the uploaded file.");
+  }
+  if (!isAllowedContentType(kind, actualContentType)) {
+    throwUploadError(`${kind === "audio" ? "MP3" : "\u753B\u50CF"} content type is not allowed.`);
+  }
+  return {
+    url: metadata.url,
+    pathname: metadata.pathname,
+    size: metadata.size,
+    contentType: actualContentType
+  };
+}
+async function deleteBlobIfPresent(pathname) {
+  if (!pathname) return true;
+  try {
+    await del(pathname);
+    return true;
+  } catch (error) {
+    console.error(`Failed to delete blob ${pathname}`, error);
+    return false;
+  }
+}
+function throwUploadError(message) {
+  const err = new Error(message);
+  err.code = "UPLOAD_VALIDATION_FAILED";
+  throw err;
+}
 
 // server/middleware/adminAuth.ts
-import crypto2 from "crypto";
+import crypto from "crypto";
 var COOKIE = "boss_music_admin";
 function getSessionSecret() {
   const s = process.env.SESSION_SECRET?.trim();
@@ -390,7 +350,7 @@ function createAdminSessionToken() {
   if (!secret) return null;
   const expSec = Math.floor(Date.now() / 1e3) + 7 * 24 * 60 * 60;
   const payload = Buffer.from(JSON.stringify({ exp: expSec }), "utf8").toString("base64url");
-  const sig = crypto2.createHmac("sha256", secret).update(payload).digest("base64url");
+  const sig = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
   return `${payload}.${sig}`;
 }
 function verifyAdminSessionToken(token) {
@@ -402,7 +362,7 @@ function verifyAdminSessionToken(token) {
   const [payload, sig] = parts;
   if (!payload || !sig) return false;
   try {
-    const expected = crypto2.createHmac("sha256", secret).update(payload).digest("base64url");
+    const expected = crypto.createHmac("sha256", secret).update(payload).digest("base64url");
     if (sig !== expected) return false;
     const data = JSON.parse(Buffer.from(payload, "base64url").toString("utf8"));
     if (typeof data.exp !== "number" || data.exp * 1e3 < Date.now()) return false;
@@ -446,209 +406,8 @@ function requireAdmin(req, res, next) {
 }
 var adminCookieName = COOKIE;
 
-// server/services/oauthStateStore.ts
-import crypto3 from "crypto";
-var STATE_TTL_MS = 10 * 60 * 1e3;
-var pendingOAuthStates = /* @__PURE__ */ new Map();
-function cleanupStates() {
-  const now = Date.now();
-  for (const [k, exp] of pendingOAuthStates) {
-    if (exp < now) pendingOAuthStates.delete(k);
-  }
-}
-function getHmacSecret() {
-  return process.env.SESSION_SECRET?.trim() || process.env.TOKEN_ENCRYPTION_KEY?.trim() || null;
-}
-function createSignedState() {
-  const secret = getHmacSecret();
-  const nonce = crypto3.randomBytes(24).toString("hex");
-  if (!secret) return nonce;
-  const expiry = Date.now() + STATE_TTL_MS;
-  const payload = `${nonce}.${expiry}`;
-  const sig = crypto3.createHmac("sha256", secret).update(payload).digest("hex");
-  return `${payload}.${sig}`;
-}
-function verifySignedState(state) {
-  const secret = getHmacSecret();
-  if (!secret) return false;
-  const parts = state.split(".");
-  if (parts.length !== 3) return false;
-  const [nonce, expiryStr, sig] = parts;
-  if (!nonce || !expiryStr || !sig) return false;
-  const payload = `${nonce}.${expiryStr}`;
-  const expected = crypto3.createHmac("sha256", secret).update(payload).digest("hex");
-  if (sig !== expected) return false;
-  const expiry = Number(expiryStr);
-  if (Number.isNaN(expiry) || expiry < Date.now()) return false;
-  return true;
-}
-async function saveOAuthState(state) {
-  if (isRedisConfigured()) {
-    await getRedis().set(oauthStateKey(state), "1", { ex: Math.ceil(STATE_TTL_MS / 1e3) });
-    return;
-  }
-  cleanupStates();
-  pendingOAuthStates.set(state, Date.now() + STATE_TTL_MS);
-}
-async function consumeOAuthState(state) {
-  if (isRedisConfigured()) {
-    const r = getRedis();
-    const key = oauthStateKey(state);
-    const raw = await r.get(key);
-    if (raw == null) return false;
-    await r.del(key);
-    return true;
-  }
-  cleanupStates();
-  const exp = pendingOAuthStates.get(state);
-  if (exp && exp >= Date.now()) {
-    pendingOAuthStates.delete(state);
-    return true;
-  }
-  return verifySignedState(state);
-}
-
-// server/routes/auth.ts
-var authRouter = Router2();
-authRouter.get(
-  "/auth/google",
-  asyncHandler(async (_req, res) => {
-    const state = createSignedState();
-    await saveOAuthState(state);
-    const oauth2 = createOAuth2Client();
-    const url = oauth2.generateAuthUrl({
-      access_type: "offline",
-      prompt: "consent",
-      scope: SCOPES,
-      state
-    });
-    res.redirect(url);
-  })
-);
-authRouter.get(
-  "/auth/google/callback",
-  asyncHandler(async (req, res) => {
-    const { code, state } = req.query;
-    if (typeof code !== "string" || typeof state !== "string") {
-      res.status(400).send("Missing code or state");
-      return;
-    }
-    const ok = await consumeOAuthState(state);
-    if (!ok) {
-      res.status(400).send("Invalid or expired state");
-      return;
-    }
-    const oauth2 = createOAuth2Client();
-    const { tokens } = await oauth2.getToken(code);
-    if (!tokens.refresh_token) {
-      res.status(400).send(
-        "No refresh token returned. Revoke app access in Google Account settings and try again with prompt=consent."
-      );
-      return;
-    }
-    try {
-      await saveRefreshToken(tokens.refresh_token);
-    } catch (error) {
-      const err = error;
-      if (err.code === "PERSISTENT_STORAGE_REQUIRED") {
-        res.status(503).send(err.message);
-        return;
-      }
-      throw error;
-    }
-    const sessionTok = createAdminSessionToken();
-    if (sessionTok) {
-      res.cookie(adminCookieName, sessionTok, {
-        httpOnly: true,
-        sameSite: "lax",
-        path: "/",
-        maxAge: 7 * 24 * 60 * 60 * 1e3
-      });
-    }
-    res.type("html").send(`<!DOCTYPE html><html><body>
-      <p>Google Drive \u3068\u9023\u643A\u3057\u307E\u3057\u305F\u3002\u3053\u306E\u30A6\u30A3\u30F3\u30C9\u30A6\u3092\u9589\u3058\u3066\u7BA1\u7406\u753B\u9762\u306B\u623B\u3063\u3066\u304F\u3060\u3055\u3044\u3002</p>
-      <script>setTimeout(() => window.close(), 1500);</script>
-    </body></html>`);
-  })
-);
-
 // server/routes/admin.ts
-import crypto4 from "crypto";
-import { Router as Router3 } from "express";
-
-// server/services/driveUploads.ts
-var MB = 1024 * 1024;
-var MAX_AUDIO_BYTES = 150 * MB;
-var MAX_IMAGE_BYTES = 10 * MB;
-var AUDIO_MIME_TYPES = /* @__PURE__ */ new Set(["audio/mpeg", "audio/mp3"]);
-var IMAGE_MIME_TYPES = /* @__PURE__ */ new Set(["image/jpeg", "image/png", "image/webp"]);
-function getUploadRules(kind) {
-  return kind === "audio" ? {
-    maxBytes: MAX_AUDIO_BYTES,
-    mimeTypes: AUDIO_MIME_TYPES,
-    prefix: "audio",
-    label: "MP3"
-  } : {
-    maxBytes: MAX_IMAGE_BYTES,
-    mimeTypes: IMAGE_MIME_TYPES,
-    prefix: "cover",
-    label: "JPG / PNG / WEBP"
-  };
-}
-function makeUploadError(message, code = "UPLOAD_VALIDATION_FAILED") {
-  const err = new Error(message);
-  err.code = code;
-  return err;
-}
-function parseNumericSize(value) {
-  if (typeof value === "number") return Number.isFinite(value) ? value : NaN;
-  if (typeof value !== "string") return NaN;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : NaN;
-}
-async function verifyDriveUpload(drive, fileId, kind, folderId) {
-  const response = await drive.files.get({
-    fileId,
-    fields: "id,name,mimeType,size,parents,trashed",
-    supportsAllDrives: true
-  });
-  const data = response.data;
-  const parents = Array.isArray(data.parents) ? data.parents.filter(Boolean) : [];
-  const mimeType = String(data.mimeType ?? "").trim().toLowerCase();
-  const size = parseNumericSize(data.size);
-  const rules = getUploadRules(kind);
-  if (!data.id) throw makeUploadError("Drive \u4E0A\u306B\u30A2\u30C3\u30D7\u30ED\u30FC\u30C9\u6E08\u307F\u30D5\u30A1\u30A4\u30EB\u304C\u898B\u3064\u304B\u308A\u307E\u305B\u3093\u3002");
-  if (data.trashed) throw makeUploadError("Drive \u4E0A\u306E\u30D5\u30A1\u30A4\u30EB\u304C\u30B4\u30DF\u7BB1\u306B\u3042\u308A\u307E\u3059\u3002");
-  if (!parents.includes(folderId)) {
-    throw makeUploadError("Drive \u4E0A\u306E\u30D5\u30A1\u30A4\u30EB\u4FDD\u5B58\u5148\u304C\u60F3\u5B9A\u30D5\u30A9\u30EB\u30C0\u3067\u306F\u3042\u308A\u307E\u305B\u3093\u3002");
-  }
-  if (!rules.mimeTypes.has(mimeType)) {
-    throw makeUploadError(`${rules.label} \u306E MIME type \u304C\u4E0D\u6B63\u3067\u3059\u3002`);
-  }
-  if (!Number.isFinite(size) || size <= 0) {
-    throw makeUploadError(`${rules.label} \u306E\u30B5\u30A4\u30BA\u3092\u78BA\u8A8D\u3067\u304D\u307E\u305B\u3093\u3067\u3057\u305F\u3002`);
-  }
-  if (size > rules.maxBytes) {
-    throw makeUploadError(`${rules.label} \u306F ${Math.round(rules.maxBytes / MB)}MB \u4EE5\u4E0B\u306B\u3057\u3066\u304F\u3060\u3055\u3044\u3002`);
-  }
-  return {
-    fileId: data.id,
-    name: String(data.name ?? ""),
-    mimeType,
-    size,
-    parents
-  };
-}
-async function deleteDriveFileIfPresent(drive, fileId) {
-  try {
-    await drive.files.delete({ fileId, supportsAllDrives: true });
-  } catch (error) {
-    console.error(`Failed to delete Drive file ${fileId}`, error);
-  }
-}
-
-// server/routes/admin.ts
-var adminRouter = Router3();
+var adminRouter = Router2();
 function splitTags(input) {
   if (Array.isArray(input)) {
     return input.map((tag) => String(tag).trim()).filter(Boolean);
@@ -657,49 +416,98 @@ function splitTags(input) {
   if (!raw) return [];
   return raw.split(",").map((tag) => tag.trim()).filter(Boolean);
 }
+function parseClientPayload(payload) {
+  if (!payload) return {};
+  try {
+    const parsed = JSON.parse(payload);
+    return parsed && typeof parsed === "object" ? parsed : {};
+  } catch {
+    return {};
+  }
+}
 function isValidationError(error) {
   return typeof error === "object" && error !== null && "code" in error;
 }
 function isTrackNotFound(error) {
   return isValidationError(error) && error.code === "TRACK_NOT_FOUND";
 }
+function isUuidLike(value) {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+function ensureExpectedPath(kind, pathname) {
+  const audio = /^tracks\/([0-9a-f-]+)\/audio-[a-zA-Z0-9_-]+\.(mp3)$/i;
+  const image = /^tracks\/([0-9a-f-]+)\/cover-[a-zA-Z0-9_-]+\.(jpg|jpeg|png|webp)$/i;
+  const match = kind === "audio" ? audio.exec(pathname) : image.exec(pathname);
+  if (!match?.[1] || !isUuidLike(match[1])) {
+    const err = new Error("Blob upload pathname is not allowed");
+    err.code = "UPLOAD_VALIDATION_FAILED";
+    throw err;
+  }
+}
+function getStorageStatus() {
+  const missing = [];
+  if (!process.env.DATABASE_URL?.trim()) missing.push("DATABASE_URL");
+  if (!process.env.BLOB_READ_WRITE_TOKEN?.trim()) missing.push("BLOB_READ_WRITE_TOKEN");
+  return {
+    configOk: missing.length === 0,
+    storage: "vercel-blob+neon",
+    missing,
+    reason: missing.length ? `${missing.join(", ")} is required` : void 0
+  };
+}
 adminRouter.get(
-  "/admin/drive-status",
+  "/admin/storage-status",
   asyncHandler(async (_req, res) => {
-    const persistence = getPersistenceStatus();
-    if (!persistence.configOk) {
-      res.json({
-        connected: false,
-        storage: persistence.storage,
-        configOk: false,
-        reason: persistence.reason
-      });
-      return;
+    const status = getStorageStatus();
+    if (status.configOk) {
+      try {
+        await ensureTracksSchema();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "Database connection failed";
+        res.json({ ...status, configOk: false, reason: message });
+        return;
+      }
     }
-    const rt = await loadRefreshToken();
-    res.json({
-      connected: Boolean(rt),
-      storage: persistence.storage,
-      configOk: true
-    });
+    res.json(status);
   })
 );
 adminRouter.post(
-  "/admin/google-upload-config",
+  "/admin/session",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const token = createAdminSessionToken();
+    if (token) {
+      res.cookie(adminCookieName, token, {
+        httpOnly: true,
+        sameSite: "lax",
+        path: "/",
+        maxAge: 7 * 24 * 60 * 60 * 1e3
+      });
+    }
+    res.json({ ok: true, cookieSet: Boolean(token) });
+  })
+);
+adminRouter.post(
+  "/admin/blob-upload",
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-    if (!clientId) {
-      res.status(500).json({ error: "GOOGLE_CLIENT_ID is required" });
-      return;
-    }
-    const folderId = getDriveFolderId();
-    const user = await getConnectedDriveUser();
-    res.json({
-      clientId,
-      folderId,
-      connectedUser: user
+    const jsonResponse = await handleUpload({
+      request: req,
+      body: req.body,
+      onBeforeGenerateToken: async (pathname, clientPayload) => {
+        const parsed = parseClientPayload(clientPayload);
+        const kind = parseUploadKind(parsed.kind);
+        ensureExpectedPath(kind, pathname);
+        return {
+          allowedContentTypes: allowedContentTypes(kind),
+          maximumSizeInBytes: maxUploadBytes(kind),
+          addRandomSuffix: false,
+          allowOverwrite: false,
+          tokenPayload: JSON.stringify({ kind })
+        };
+      }
     });
+    res.json(jsonResponse);
   })
 );
 adminRouter.post(
@@ -707,50 +515,45 @@ adminRouter.post(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const body = req.body ?? {};
+    const trackId = String(body.trackId ?? "").trim();
     const title = String(body.title ?? "").trim();
     const artist = String(body.artist ?? "").trim();
     const description = String(body.description ?? "").trim();
-    const audioFileId = String(body.audioFileId ?? "").trim();
-    const imageFileId = String(body.imageFileId ?? "").trim();
     const tags = splitTags(body.tags);
+    if (!trackId || !isUuidLike(trackId)) {
+      res.status(400).json({ error: "valid trackId is required" });
+      return;
+    }
     if (!title || !artist) {
       res.status(400).json({ error: "title and artist are required" });
       return;
     }
-    if (!audioFileId) {
-      res.status(400).json({ error: "audioFileId is required" });
+    if (!body.audio) {
+      res.status(400).json({ error: "audio blob metadata is required" });
       return;
     }
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-    let verifiedAudio = null;
-    let verifiedImage = null;
+    let audio = null;
+    let cover;
     try {
-      verifiedAudio = await verifyDriveUpload(drive, audioFileId, "audio", folderId);
-      if (imageFileId) {
-        verifiedImage = await verifyDriveUpload(drive, imageFileId, "image", folderId);
+      audio = await verifyBlobUpload("audio", body.audio);
+      ensureExpectedPath("audio", audio.pathname);
+      if (body.cover) {
+        cover = await verifyBlobUpload("image", body.cover);
+        ensureExpectedPath("image", cover.pathname);
       }
-      const track = {
-        id: crypto4.randomUUID(),
+      const track = await addTrack({
+        id: trackId,
         title,
         artist,
         description,
-        createdAt: (/* @__PURE__ */ new Date()).toISOString().split("T")[0],
         tags,
-        playable: true,
-        order: -1,
-        driveAudioFileId: verifiedAudio.fileId,
-        ...verifiedImage ? { driveCoverFileId: verifiedImage.fileId } : {}
-      };
-      await addTrackAndSave(drive, folderId, track);
+        audio,
+        ...cover ? { cover } : {}
+      });
       res.json({ track: toPublicTrack(track) });
     } catch (error) {
-      if (verifiedAudio) {
-        await deleteDriveFileIfPresent(drive, verifiedAudio.fileId);
-      }
-      if (verifiedImage) {
-        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
-      }
+      if (audio) await deleteBlobIfPresent(audio.pathname);
+      if (cover) await deleteBlobIfPresent(cover.pathname);
       const err = error;
       if (isValidationError(error) && err.code === "UPLOAD_VALIDATION_FAILED") {
         res.status(400).json({ error: err.message });
@@ -765,7 +568,7 @@ adminRouter.post(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     res.status(410).json({
-      error: "Legacy multipart upload is retired. Use browser-direct Google Drive upload from /admin and finish with /api/admin/upload/complete."
+      error: "Legacy multipart upload is retired. Use browser-direct Vercel Blob upload from /admin and finish with /api/admin/upload/complete."
     });
   })
 );
@@ -775,51 +578,34 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const id = String(req.params.id ?? "").trim();
     const body = req.body ?? {};
-    const imageFileId = String(body.imageFileId ?? "").trim();
     if (!id) {
       res.status(400).json({ error: "id is required" });
       return;
     }
-    if (!imageFileId) {
-      res.status(400).json({ error: "imageFileId is required" });
+    if (!body.image) {
+      res.status(400).json({ error: "image blob metadata is required" });
       return;
     }
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-    let verifiedImage = null;
+    let image = null;
     try {
-      verifiedImage = await verifyDriveUpload(drive, imageFileId, "image", folderId);
+      image = await verifyBlobUpload("image", body.image);
+      ensureExpectedPath("image", image.pathname);
+      const { track, oldCoverPath } = await updateTrackCoverById(id, image);
+      if (oldCoverPath && oldCoverPath !== image.pathname) {
+        await deleteBlobIfPresent(oldCoverPath);
+      }
+      res.json({ track: toPublicTrack(track) });
     } catch (error) {
+      if (image) await deleteBlobIfPresent(image.pathname);
       const err = error;
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
       if (isValidationError(error) && err.code === "UPLOAD_VALIDATION_FAILED") {
         res.status(400).json({ error: err.message });
         return;
       }
-      throw error;
-    }
-    try {
-      const { catalog } = await readCatalog(drive, folderId);
-      const existing = catalog.tracks.find((t) => t.id === id);
-      if (!existing) {
-        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
-        res.status(404).json({ error: "Track not found" });
-        return;
-      }
-      const oldCoverId = existing.driveCoverFileId;
-      await updateTrackCoverById(drive, folderId, id, verifiedImage.fileId);
-      if (oldCoverId && oldCoverId !== verifiedImage.fileId) {
-        await deleteDriveFileIfPresent(drive, oldCoverId);
-      }
-      const { catalog: after } = await readCatalog(drive, folderId);
-      const updated = after.tracks.find((t) => t.id === id);
-      res.json({ track: updated ? toPublicTrack(updated) : null });
-    } catch (error) {
-      if (isTrackNotFound(error)) {
-        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
-        res.status(404).json({ error: "Track not found" });
-        return;
-      }
-      await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
       throw error;
     }
   })
@@ -833,18 +619,10 @@ adminRouter.delete(
       res.status(400).json({ error: "id is required" });
       return;
     }
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-    let oldCoverId;
     try {
-      const { catalog: catalog2 } = await readCatalog(drive, folderId);
-      const existing = catalog2.tracks.find((t) => t.id === id);
-      if (!existing) {
-        res.status(404).json({ error: "Track not found" });
-        return;
-      }
-      oldCoverId = existing.driveCoverFileId;
-      await updateTrackCoverById(drive, folderId, id, void 0);
+      const { track, oldCoverPath } = await updateTrackCoverById(id, null);
+      await deleteBlobIfPresent(oldCoverPath);
+      res.json({ track: toPublicTrack(track) });
     } catch (error) {
       if (isTrackNotFound(error)) {
         res.status(404).json({ error: "Track not found" });
@@ -852,12 +630,6 @@ adminRouter.delete(
       }
       throw error;
     }
-    if (oldCoverId) {
-      await deleteDriveFileIfPresent(drive, oldCoverId);
-    }
-    const { catalog } = await readCatalog(drive, folderId);
-    const updated = catalog.tracks.find((t) => t.id === id);
-    res.json({ track: updated ? toPublicTrack(updated) : null });
   })
 );
 adminRouter.delete(
@@ -870,12 +642,9 @@ adminRouter.delete(
       return;
     }
     const keepFiles = req.query.keepFiles === "1" || req.query.keepFiles === "true" || String(req.query.keepFiles ?? "").toLowerCase() === "yes";
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
     let removed;
     try {
-      const result = await removeTrackById(drive, folderId, id);
-      removed = result.removed;
+      removed = await removeTrackById(id);
     } catch (error) {
       if (isTrackNotFound(error)) {
         res.status(404).json({ error: "Track not found" });
@@ -883,136 +652,24 @@ adminRouter.delete(
       }
       throw error;
     }
-    const fileDeleteErrors = [];
+    const fileDeleteWarnings = [];
     if (!keepFiles) {
-      try {
-        await drive.files.delete({ fileId: removed.driveAudioFileId, supportsAllDrives: true });
-      } catch (e) {
-        console.error("Failed to delete audio file after track removal", e);
-        fileDeleteErrors.push("audio");
-      }
-      if (removed.driveCoverFileId) {
-        try {
-          await drive.files.delete({ fileId: removed.driveCoverFileId, supportsAllDrives: true });
-        } catch (e) {
-          console.error("Failed to delete cover file after track removal", e);
-          fileDeleteErrors.push("cover");
-        }
-      }
+      const audioDeleted = await deleteBlobIfPresent(removed.audioPath);
+      if (!audioDeleted) fileDeleteWarnings.push("audio");
+      const coverDeleted = await deleteBlobIfPresent(removed.coverPath);
+      if (!coverDeleted) fileDeleteWarnings.push("cover");
     }
     res.json({
       ok: true,
       id: removed.id,
-      ...fileDeleteErrors.length > 0 ? { fileDeleteWarnings: fileDeleteErrors } : {}
+      ...fileDeleteWarnings.length > 0 ? { fileDeleteWarnings } : {}
     });
   })
 );
 
-// server/routes/media.ts
-import { Router as Router4 } from "express";
-import { google as google2 } from "googleapis";
-
-// server/utils/mediaHeaders.ts
-function applyGoogleHeaders(res, headers, status) {
-  if (!headers) {
-    res.status(status);
-    return;
-  }
-  const h = headers;
-  const ct = h["content-type"] ?? h["Content-Type"];
-  if (ct) res.setHeader("Content-Type", ct);
-  const cr = h["content-range"] ?? h["Content-Range"];
-  if (cr) res.setHeader("Content-Range", cr);
-  const cl = h["content-length"] ?? h["Content-Length"];
-  if (cl) res.setHeader("Content-Length", cl);
-  const ar = h["accept-ranges"] ?? h["Accept-Ranges"];
-  if (ar) res.setHeader("Accept-Ranges", ar);
-  res.status(status);
-}
-
-// server/routes/media.ts
-var mediaRouter = Router4();
-function corsMedia(req, res, next) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Expose-Headers", "Content-Length, Content-Range, Accept-Ranges");
-  if (req.method === "OPTIONS") {
-    res.status(204).end();
-    return;
-  }
-  next();
-}
-mediaRouter.use(corsMedia);
-mediaRouter.get(
-  "/media/audio/:fileId",
-  asyncHandler(async (req, res) => {
-    const { fileId } = req.params;
-    const range = req.headers.range;
-    try {
-      const auth = await getOAuth2ClientForDrive();
-      const drive = google2.drive({ version: "v3", auth });
-      const gRes = await drive.files.get(
-        { fileId, alt: "media", supportsAllDrives: true },
-        {
-          responseType: "stream",
-          headers: range ? { Range: range } : void 0
-        }
-      );
-      const stream = gRes.data;
-      applyGoogleHeaders(res, gRes.headers, gRes.status ?? 200);
-      stream.on("error", (err) => {
-        console.error("Drive stream error", err);
-        if (!res.headersSent) res.status(502).end();
-        else res.destroy();
-      });
-      stream.pipe(res);
-    } catch (e) {
-      const err = e;
-      console.error("media audio", err);
-      if (err.code === "NOT_CONNECTED") {
-        res.status(503).json({ error: "Drive not configured" });
-        return;
-      }
-      res.status(err.response?.status ?? 500).json({ error: err.message });
-    }
-  })
-);
-mediaRouter.get(
-  "/media/image/:fileId",
-  asyncHandler(async (req, res) => {
-    const { fileId } = req.params;
-    const range = req.headers.range;
-    try {
-      const auth = await getOAuth2ClientForDrive();
-      const drive = google2.drive({ version: "v3", auth });
-      const gRes = await drive.files.get(
-        { fileId, alt: "media", supportsAllDrives: true },
-        {
-          responseType: "stream",
-          headers: range ? { Range: range } : void 0
-        }
-      );
-      const stream = gRes.data;
-      applyGoogleHeaders(res, gRes.headers, gRes.status ?? 200);
-      stream.on("error", (err) => {
-        console.error("Drive stream error", err);
-        if (!res.headersSent) res.status(502).end();
-        else res.destroy();
-      });
-      stream.pipe(res);
-    } catch (e) {
-      const err = e;
-      if (err.code === "NOT_CONNECTED") {
-        res.status(503).json({ error: "Drive not configured" });
-        return;
-      }
-      res.status(500).json({ error: e.message });
-    }
-  })
-);
-
 // server/routes/health.ts
-import { Router as Router5 } from "express";
-var healthRouter = Router5();
+import { Router as Router3 } from "express";
+var healthRouter = Router3();
 healthRouter.get("/health", (_req, res) => {
   res.json({ ok: true });
 });
@@ -1022,16 +679,14 @@ function mountApiRoutes(app2) {
   app2.use(cookieParser());
   app2.use(express.json());
   app2.use("/api", tracksRouter);
-  app2.use("/api", authRouter);
   app2.use("/api", adminRouter);
-  app2.use("/api", mediaRouter);
   app2.use("/api", healthRouter);
 }
 function mountErrorHandler(app2) {
   app2.use((err, _req, res, _next) => {
     console.error(err);
     const typed = err;
-    const status = typed.code === "UPLOAD_VALIDATION_FAILED" ? 400 : typed.code === "NOT_CONNECTED" || typed.code === "PERSISTENT_STORAGE_REQUIRED" ? 503 : typed.code === "DRIVE_INIT_FAILED" || typed.code === "DRIVE_AUTH_FAILED" ? 502 : 500;
+    const status = typed.code === "UPLOAD_VALIDATION_FAILED" ? 400 : typed.code === "DB_NOT_CONFIGURED" ? 503 : 500;
     res.status(status).json({ error: err.message });
   });
 }

@@ -24,8 +24,6 @@ export interface Track {
   playable: boolean;
   tags: string[];
   order?: number;
-  driveAudioFileId?: string;
-  driveCoverFileId?: string;
 }
 
 interface TracksApiResponse {

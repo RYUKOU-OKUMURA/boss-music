@@ -1,0 +1,20 @@
+CREATE TABLE IF NOT EXISTS tracks (
+  id text PRIMARY KEY,
+  title text NOT NULL,
+  artist text NOT NULL,
+  description text,
+  created_at date NOT NULL DEFAULT CURRENT_DATE,
+  tags jsonb NOT NULL DEFAULT '[]'::jsonb,
+  playable boolean NOT NULL DEFAULT true,
+  sort_order integer NOT NULL DEFAULT 0,
+  audio_url text NOT NULL,
+  audio_path text NOT NULL,
+  audio_size bigint NOT NULL,
+  audio_content_type text NOT NULL,
+  cover_url text,
+  cover_path text,
+  cover_size bigint,
+  cover_content_type text,
+  inserted_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);

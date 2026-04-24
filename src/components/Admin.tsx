@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import type { Track } from '../context/AudioContext';
 import {
   createAuthHeaders,
@@ -8,20 +8,10 @@ import {
   parseErrorMessage,
   postJson,
 } from '../admin/adminHttp';
-import { DRIVE_CHUNK_BYTES, MAX_AUDIO_BYTES, MAX_IMAGE_BYTES } from '../admin/constants';
-import {
-  fetchBrowserDriveUser,
-  normalizeMimeType,
-  startBrowserResumableUpload,
-  uploadFileToDrive,
-} from '../admin/driveBrowserUpload';
-import {
-  GoogleAuthPopupError,
-  UploadSessionExpiredError,
-} from '../admin/errors';
+import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES } from '../admin/constants';
+import { normalizeMimeType, uploadFileToBlob } from '../admin/blobBrowserUpload';
 import { formatBytes } from '../admin/formatBytes';
-import { getDriveAccessTokenForUpload, normalizeEmail } from '../admin/googleIdentity';
-import type { BrowserUploadSession, DriveStatusResponse, GoogleUploadConfigResponse } from '../admin/types';
+import type { StorageStatusResponse, UploadedBlobInfo } from '../admin/types';
 import { parseMp3Metadata } from '../admin/parseMp3Id3';
 
 export const Admin: React.FC = () => {
@@ -33,21 +23,18 @@ export const Admin: React.FC = () => {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [adminSecret, setAdminSecret] = useState('');
   const [id3Loading, setId3Loading] = useState(false);
-
-  /** 画像ファイル入力でユーザーが選んだあとは、MP3 の ID3 ジャケで上書きしない */
-  const coverChosenManuallyRef = useRef(false);
-  const id3ParseGenRef = useRef(0);
-
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   const [message, setMessage] = useState('');
-  const [driveStatus, setDriveStatus] = useState<DriveStatusResponse | null>(null);
-
+  const [storageStatus, setStorageStatus] = useState<StorageStatusResponse | null>(null);
   const [catalogTracks, setCatalogTracks] = useState<Track[] | null>(null);
   const [tracksLoading, setTracksLoading] = useState(true);
   const [tracksLoadError, setTracksLoadError] = useState<string | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
 
+  /** 画像ファイル入力でユーザーが選んだあとは、MP3 の ID3 ジャケで上書きしない */
+  const coverChosenManuallyRef = useRef(false);
+  const id3ParseGenRef = useRef(0);
   const viteSecret = import.meta.env.VITE_ADMIN_SECRET as string | undefined;
 
   const authHeaders = useCallback(
@@ -69,9 +56,24 @@ export const Admin: React.FC = () => {
     }
   }, []);
 
+  const refreshStorageStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/admin/storage-status', { credentials: 'include' });
+      if (!res.ok) throw new Error(await res.text());
+      setStorageStatus((await res.json()) as StorageStatusResponse);
+    } catch {
+      setStorageStatus({
+        configOk: false,
+        storage: 'vercel-blob+neon',
+        reason: 'Blob / DB 状態を確認できませんでした。',
+      });
+    }
+  }, []);
+
   useEffect(() => {
     void refreshTracks();
-  }, [refreshTracks]);
+    void refreshStorageStatus();
+  }, [refreshStorageStatus, refreshTracks]);
 
   useEffect(() => {
     const onCatalog = () => void refreshTracks();
@@ -79,111 +81,85 @@ export const Admin: React.FC = () => {
     return () => window.removeEventListener('boss-music-catalog-changed', onCatalog);
   }, [refreshTracks]);
 
-  const refreshDriveStatus = useCallback(async () => {
-    try {
-      const res = await fetch('/api/admin/drive-status', { credentials: 'include' });
-      if (!res.ok) throw new Error(await res.text());
-      const data = (await res.json()) as DriveStatusResponse;
-      setDriveStatus(data);
-    } catch {
-      setDriveStatus({
-        connected: false,
-        storage: 'local',
-        configOk: false,
-        reason: 'Drive 状態を確認できませんでした。',
-      });
-    }
-  }, []);
-
-  useEffect(() => {
-    refreshDriveStatus();
-  }, [refreshDriveStatus]);
-
   const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
     setAudioFile(file);
-    if (!file) {
-      return;
-    }
+    if (!file) return;
 
     const gen = ++id3ParseGenRef.current;
     setId3Loading(true);
     void (async () => {
       try {
         const result = await parseMp3Metadata(file);
-        if (gen !== id3ParseGenRef.current) {
-          return;
-        }
+        if (gen !== id3ParseGenRef.current) return;
 
         setTitle((prev) => (prev.trim() === '' ? result.title ?? prev : prev));
         setArtist((prev) => (prev.trim() === '' ? result.artist ?? prev : prev));
-
-        if (result.warning) {
-          setMessage(result.warning);
-        }
-
-        if (!coverChosenManuallyRef.current && result.coverFile) {
-          setImageFile(result.coverFile);
-        }
+        if (result.warning) setMessage(result.warning);
+        if (!coverChosenManuallyRef.current && result.coverFile) setImageFile(result.coverFile);
       } finally {
-        if (gen === id3ParseGenRef.current) {
-          setId3Loading(false);
-        }
+        if (gen === id3ParseGenRef.current) setId3Loading(false);
       }
     })();
   };
 
-  const handleCoverReplace = async (trackId: string, file: File) => {
-    if (driveStatus?.configOk === false) {
-      setMessage(`エラー: ${driveStatus.reason ?? 'Vercel 本番設定が不足しています。'}`);
-      return;
-    }
-    if (driveStatus?.connected !== true) {
-      setMessage('先に Google Drive と連携してください（下のボタン）。');
-      return;
-    }
+  function makeTrackId(): string {
+    if (window.crypto.randomUUID) return window.crypto.randomUUID();
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+  }
 
+  function validateStorageReady(): boolean {
+    if (storageStatus?.configOk === false) {
+      setMessage(`エラー: ${storageStatus.reason ?? 'Vercel Blob / Neon DB の設定が不足しています。'}`);
+      return false;
+    }
+    return true;
+  }
+
+  function validateAudio(file: File): boolean {
+    const audioType = normalizeMimeType(file, 'audio');
+    if (!['audio/mpeg', 'audio/mp3'].includes(audioType)) {
+      setMessage('MP3 ファイルのみアップロードできます。');
+      return false;
+    }
+    if (file.size > MAX_AUDIO_BYTES) {
+      setMessage(`MP3 は ${formatBytes(MAX_AUDIO_BYTES)} 以下にしてください。`);
+      return false;
+    }
+    return true;
+  }
+
+  function validateImage(file: File): boolean {
     const imageType = normalizeMimeType(file, 'image');
     if (!['image/jpeg', 'image/png', 'image/webp'].includes(imageType)) {
       setMessage('画像は JPG / PNG / WEBP のみアップロードできます。');
-      return;
+      return false;
     }
     if (file.size > MAX_IMAGE_BYTES) {
       setMessage(`画像は ${formatBytes(MAX_IMAGE_BYTES)} 以下にしてください。`);
-      return;
+      return false;
     }
+    return true;
+  }
+
+  const handleCoverReplace = async (trackId: string, file: File) => {
+    if (!validateStorageReady() || !validateImage(file)) return;
 
     const headers = authHeaders();
     setRowBusyId(trackId);
-    setMessage('Google アカウント認証を確認中...');
+    setMessage('ジャケット画像を Vercel Blob にアップロード中...');
 
     try {
-      const config = await postJson<GoogleUploadConfigResponse>('/api/admin/google-upload-config', {}, headers);
-      const serverEmail = normalizeEmail(config.connectedUser.emailAddress);
-      const accessToken = await getDriveAccessTokenForUpload(config.clientId, serverEmail);
-      const browserUser = await fetchBrowserDriveUser(accessToken);
-      const browserEmail = normalizeEmail(browserUser.emailAddress);
-
-      if (serverEmail && browserEmail && serverEmail !== browserEmail) {
-        throw new Error(
-          `アップロードに使う Google アカウントが違います。サーバー連携済み: ${serverEmail} / 今回選択: ${browserEmail}`
-        );
-      }
-
-      setMessage('ジャケット画像を Google Drive にアップロード中...');
-      const imageUpload = await startBrowserResumableUpload(accessToken, config.folderId, 'image', file);
-      await uploadFileToDrive(
-        imageUpload.sessionUrl,
-        accessToken,
-        file,
-        Math.min(DRIVE_CHUNK_BYTES, file.size),
-        () => undefined
-      );
-
+      const image = await uploadFileToBlob(trackId, 'image', file, headers);
       setMessage('カタログを更新中...');
       await postJson<{ track: Track }>(
         `/api/admin/tracks/${encodeURIComponent(trackId)}/cover`,
-        { imageFileId: imageUpload.fileId },
+        { image },
         headers
       );
 
@@ -194,35 +170,24 @@ export const Admin: React.FC = () => {
       console.error('Cover replace failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
       const msg = parseErrorMessage(raw);
-      if (error instanceof UploadSessionExpiredError) {
-        setMessage('エラー: Drive のアップロードセッションが失効しました。もう一度お試しください。');
-      } else if (error instanceof GoogleAuthPopupError) {
-        setMessage(`エラー: ${explainUploadError(msg)}`);
-      } else if (msg.includes('Unauthorized') || msg.includes('401')) {
-        setMessage(
-          'エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。'
-        );
+      if (msg.includes('Unauthorized') || msg.includes('401')) {
+        setMessage('エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。');
       } else {
         setMessage(`エラー: ${explainUploadError(msg)}`);
       }
     } finally {
       setRowBusyId(null);
-      refreshDriveStatus().catch(() => undefined);
+      void refreshStorageStatus();
     }
   };
 
   const handleDeleteCover = async (trackId: string) => {
-    if (!window.confirm('この曲のジャケット画像を削除しますか？Drive 上の画像ファイルも削除します。')) {
-      return;
-    }
+    if (!window.confirm('この曲のジャケット画像を削除しますか？Blob 上の画像ファイルも削除します。')) return;
     const headers = authHeaders();
     setRowBusyId(trackId);
     setMessage('');
     try {
-      await deleteJson<{ track: Track | null }>(
-        `/api/admin/tracks/${encodeURIComponent(trackId)}/cover`,
-        headers
-      );
+      await deleteJson<{ track: Track | null }>(`/api/admin/tracks/${encodeURIComponent(trackId)}/cover`, headers);
       setMessage('ジャケット画像を削除しました。');
       window.dispatchEvent(new Event('boss-music-catalog-changed'));
       await refreshTracks();
@@ -236,11 +201,7 @@ export const Admin: React.FC = () => {
   };
 
   const handleDeleteTrack = async (trackId: string, trackTitle: string) => {
-    if (
-      !window.confirm(
-        `「${trackTitle}」をカタログから削除し、Drive 上の音声ファイルとジャケット画像も削除しますか？`
-      )
-    ) {
+    if (!window.confirm(`「${trackTitle}」をカタログから削除し、Blob 上の音声ファイルとジャケット画像も削除しますか？`)) {
       return;
     }
     const headers = authHeaders();
@@ -253,7 +214,7 @@ export const Admin: React.FC = () => {
       );
       if (result.fileDeleteWarnings?.length) {
         setMessage(
-          `曲はカタログから削除しました。一部の Drive ファイル削除に失敗した可能性があります（${result.fileDeleteWarnings.join(', ')}）。`
+          `曲はカタログから削除しました。一部の Blob ファイル削除に失敗した可能性があります（${result.fileDeleteWarnings.join(', ')}）。`
         );
       } else {
         setMessage('曲を削除しました。');
@@ -277,97 +238,44 @@ export const Admin: React.FC = () => {
       setMessage('必須項目（タイトル、アーティスト、MP3 ファイル）を入力してください。');
       return;
     }
-
-    if (driveStatus?.configOk === false) {
-      setMessage(`エラー: ${driveStatus.reason ?? 'Vercel 本番設定が不足しています。'}`);
-      return;
-    }
-
-    if (driveStatus?.connected !== true) {
-      setMessage('先に Google Drive と連携してください（下のボタン）。');
-      return;
-    }
-
-    const audioType = normalizeMimeType(audioFile, 'audio');
-    const imageType = imageFile ? normalizeMimeType(imageFile, 'image') : '';
-
-    if (!['audio/mpeg', 'audio/mp3'].includes(audioType)) {
-      setMessage('MP3 ファイルのみアップロードできます。');
-      return;
-    }
-    if (imageFile && !['image/jpeg', 'image/png', 'image/webp'].includes(imageType)) {
-      setMessage('画像は JPG / PNG / WEBP のみアップロードできます。');
-      return;
-    }
-    if (audioFile.size > MAX_AUDIO_BYTES) {
-      setMessage(`MP3 は ${formatBytes(MAX_AUDIO_BYTES)} 以下にしてください。`);
-      return;
-    }
-    if (imageFile && imageFile.size > MAX_IMAGE_BYTES) {
-      setMessage(`画像は ${formatBytes(MAX_IMAGE_BYTES)} 以下にしてください。`);
-      return;
-    }
+    if (!validateStorageReady() || !validateAudio(audioFile)) return;
+    if (imageFile && !validateImage(imageFile)) return;
 
     const headers = authHeaders();
+    const trackId = makeTrackId();
 
     setIsUploading(true);
     setUploadProgress(0);
-    setMessage('Google アカウント認証を確認中...');
+    setMessage('Vercel Blob のアップロード準備中...');
 
     try {
-      const config = await postJson<GoogleUploadConfigResponse>('/api/admin/google-upload-config', {}, headers);
-      const serverEmail = normalizeEmail(config.connectedUser.emailAddress);
-      const accessToken = await getDriveAccessTokenForUpload(config.clientId, serverEmail);
-      const browserUser = await fetchBrowserDriveUser(accessToken);
-      const browserEmail = normalizeEmail(browserUser.emailAddress);
-
-      if (serverEmail && browserEmail && serverEmail !== browserEmail) {
-        throw new Error(
-          `アップロードに使う Google アカウントが違います。サーバー連携済み: ${serverEmail} / 今回選択: ${browserEmail}`
-        );
-      }
-
-      setMessage('Google Drive のアップロード準備中...');
-      const audioUploadPromise = startBrowserResumableUpload(accessToken, config.folderId, 'audio', audioFile);
-      const imageUploadPromise = imageFile
-        ? startBrowserResumableUpload(accessToken, config.folderId, 'image', imageFile)
-        : Promise.resolve<BrowserUploadSession | null>(null);
-      const [audioUpload, imageUpload] = await Promise.all([audioUploadPromise, imageUploadPromise]);
-
-      if (imageFile && imageUpload) {
-        setMessage('ジャケット画像を Google Drive にアップロード中...');
-        await uploadFileToDrive(
-          imageUpload.sessionUrl,
-          accessToken,
-          imageFile,
-          Math.min(DRIVE_CHUNK_BYTES, imageFile.size),
-          (loaded, total) => {
-            const pct = total === 0 ? 0 : loaded / total;
-            setUploadProgress(Math.round(pct * 20));
-          }
-        );
+      let cover: UploadedBlobInfo | undefined;
+      if (imageFile) {
+        setMessage('ジャケット画像を Vercel Blob にアップロード中...');
+        cover = await uploadFileToBlob(trackId, 'image', imageFile, headers, (percentage) => {
+          setUploadProgress(Math.round(percentage * 0.2));
+        });
       } else {
         setUploadProgress(20);
       }
 
-      setMessage('MP3 を Google Drive にアップロード中...');
-      await uploadFileToDrive(audioUpload.sessionUrl, accessToken, audioFile, DRIVE_CHUNK_BYTES, (loaded, total) => {
-        const pct = total === 0 ? 0 : loaded / total;
-        setUploadProgress(20 + Math.round(pct * 70));
+      setMessage('MP3 を Vercel Blob にアップロード中...');
+      const audio = await uploadFileToBlob(trackId, 'audio', audioFile, headers, (percentage) => {
+        setUploadProgress(20 + Math.round(percentage * 0.7));
       });
 
       setMessage('カタログを更新中...');
       setUploadProgress(95);
-
       await postJson<{ track: Track }>(
         '/api/admin/upload/complete',
         {
+          trackId,
           title,
           artist,
           description,
           tags,
-          audioFileId: audioUpload.fileId,
-          imageFileId: imageUpload?.fileId,
+          audio,
+          cover,
         },
         headers
       );
@@ -391,25 +299,19 @@ export const Admin: React.FC = () => {
       console.error('Upload failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
       const msg = parseErrorMessage(raw);
-      if (error instanceof UploadSessionExpiredError) {
-        setMessage('エラー: Drive のアップロードセッションが失効しました。もう一度アップロードしてください。');
-      } else if (error instanceof GoogleAuthPopupError) {
-        setMessage(`エラー: ${explainUploadError(msg)}`);
-      } else if (msg.includes('Unauthorized') || msg.includes('401')) {
-        setMessage(
-          'エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。'
-        );
+      if (msg.includes('Unauthorized') || msg.includes('401')) {
+        setMessage('エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。');
       } else {
         setMessage(`エラー: ${explainUploadError(msg)}`);
       }
       setUploadProgress(0);
     } finally {
       setIsUploading(false);
-      refreshDriveStatus().catch(() => undefined);
+      void refreshStorageStatus();
     }
   };
 
-  const driveConnected = driveStatus?.connected ?? null;
+  const configOk = storageStatus?.configOk !== false;
   const rowSectionDisabled = rowBusyId !== null || isUploading;
 
   return (
@@ -419,45 +321,29 @@ export const Admin: React.FC = () => {
           <div>
             <h1 className="text-3xl font-headline">楽曲アップロード</h1>
             <p className="text-sm text-white/50 mt-2">
-              Vercel 本番ではブラウザから Google Drive に直接アップロードします。
+              音源とジャケット画像は Vercel Blob、曲情報は Neon DB に保存します。
             </p>
           </div>
         </div>
 
         <div className="mb-8 p-4 rounded-lg border border-white/10 bg-black/20 space-y-3">
-          <p className="text-sm font-bold text-white/90">Google Drive 連携（初回・再認証）</p>
+          <p className="text-sm font-bold text-white/90">ストレージ設定</p>
           <p className="text-xs text-white/50">
-            サーバー連携済みの Google アカウントと同じアカウントでアップロードしてください。Vercel
-            本番では Upstash Redis が必須です。
+            Vercel に <span className="font-mono">BLOB_READ_WRITE_TOKEN</span>、Neon に{' '}
+            <span className="font-mono">DATABASE_URL</span> を設定してください。
           </p>
           <div className="flex flex-wrap gap-3 items-center">
-            <a
-              href="/api/auth/google"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-block bg-white/10 hover:bg-white/20 text-white px-4 py-2 rounded-full text-sm font-bold border border-white/20"
-            >
-              Drive と連携する
-            </a>
-            <button
-              type="button"
-              onClick={() => refreshDriveStatus()}
-              className="text-sm text-neon-cyan hover:underline"
-            >
-              連携状態を再確認
+            <button type="button" onClick={() => refreshStorageStatus()} className="text-sm text-neon-cyan hover:underline">
+              状態を再確認
             </button>
-            {driveConnected === null && <span className="text-xs text-white/40">確認中…</span>}
-            {driveStatus && (
+            {storageStatus && (
               <span className="text-xs text-white/40">
-                storage: <span className="font-mono">{driveStatus.storage}</span>
+                storage: <span className="font-mono">{storageStatus.storage}</span>
               </span>
             )}
-            {driveConnected === true && <span className="text-xs text-neon-green">連携済み</span>}
-            {driveStatus?.configOk === false && (
-              <span className="text-xs text-amber-400">{driveStatus.reason ?? '本番設定が不足しています。'}</span>
-            )}
-            {driveStatus?.configOk !== false && driveConnected === false && (
-              <span className="text-xs text-amber-400">未連携（上のリンクから許可してください）</span>
+            {storageStatus?.configOk === true && <span className="text-xs text-neon-green">設定済み</span>}
+            {storageStatus?.configOk === false && (
+              <span className="text-xs text-amber-400">{storageStatus.reason ?? '本番設定が不足しています。'}</span>
             )}
           </div>
         </div>
@@ -473,8 +359,7 @@ export const Admin: React.FC = () => {
             autoComplete="off"
           />
           <p className="text-[10px] text-white/35 mt-1">
-            OAuth 後の Cookie と併用できます。ローカルでは .env に ADMIN_SECRET と
-            VITE_ADMIN_SECRET を同じ値で入れると入力不要です。
+            ローカルでは .env に ADMIN_SECRET と VITE_ADMIN_SECRET を同じ値で入れると入力不要です。
           </p>
         </div>
 
@@ -545,9 +430,7 @@ export const Admin: React.FC = () => {
               required
               disabled={isUploading}
             />
-            {id3Loading && (
-              <p className="mt-2 text-xs text-white/45">ID3 タグを読み込み中…</p>
-            )}
+            {id3Loading && <p className="mt-2 text-xs text-white/45">ID3 タグを読み込み中…</p>}
           </div>
 
           <div>
@@ -567,19 +450,14 @@ export const Admin: React.FC = () => {
             />
             {isUploading && uploadProgress > 0 && (
               <div className="mt-2 h-2 w-full bg-black/50 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-neon-cyan transition-all duration-300"
-                  style={{ width: `${uploadProgress}%` }}
-                />
+                <div className="h-full bg-neon-cyan transition-all duration-300" style={{ width: `${uploadProgress}%` }} />
               </div>
             )}
           </div>
 
           <button
             type="submit"
-            disabled={
-              isUploading || rowBusyId !== null || driveConnected !== true || driveStatus?.configOk === false
-            }
+            disabled={isUploading || rowBusyId !== null || !configOk}
             className="w-full bg-neon-cyan text-black font-bold py-4 rounded-full hover:scale-[1.02] transition-transform disabled:opacity-50 disabled:hover:scale-100 mt-8"
           >
             {isUploading ? 'アップロード処理中...' : 'アップロード'}
@@ -589,7 +467,7 @@ export const Admin: React.FC = () => {
         <div className="mt-16 pt-10 border-t border-white/10 space-y-4">
           <h2 className="text-xl font-headline text-white">登録済みトラック</h2>
           <p className="text-xs text-white/50">
-            ジャケットの差し替え・削除、曲の削除ができます（カタログと Drive ファイルを更新します）。
+            ジャケットの差し替え・削除、曲の削除ができます（DB と Blob ファイルを更新します）。
           </p>
 
           {tracksLoading && <p className="text-sm text-white/50">読み込み中…</p>}
@@ -627,7 +505,7 @@ export const Admin: React.FC = () => {
                       type="file"
                       accept="image/jpeg,image/png,image/webp"
                       className="sr-only"
-                      disabled={rowSectionDisabled || driveConnected !== true || driveStatus?.configOk === false}
+                      disabled={rowSectionDisabled || !configOk}
                       onChange={(ev) => {
                         const f = ev.target.files?.[0];
                         ev.target.value = '';
@@ -636,9 +514,7 @@ export const Admin: React.FC = () => {
                     />
                     <span
                       className={`inline-block text-xs font-bold px-3 py-2 rounded-full border border-white/20 bg-white/10 hover:bg-white/20 ${
-                        rowSectionDisabled || driveConnected !== true || driveStatus?.configOk === false
-                          ? 'opacity-40 pointer-events-none'
-                          : ''
+                        rowSectionDisabled || !configOk ? 'opacity-40 pointer-events-none' : ''
                       }`}
                     >
                       {rowBusyId === track.id ? '処理中…' : 'カバー変更'}
@@ -647,12 +523,7 @@ export const Admin: React.FC = () => {
 
                   <button
                     type="button"
-                    disabled={
-                      rowSectionDisabled ||
-                      driveConnected !== true ||
-                      driveStatus?.configOk === false ||
-                      !track.driveCoverFileId
-                    }
+                    disabled={rowSectionDisabled || !configOk || !track.coverImage}
                     onClick={() => void handleDeleteCover(track.id)}
                     className="text-xs font-bold px-3 py-2 rounded-full border border-amber-500/40 text-amber-200/90 hover:bg-amber-500/10 disabled:opacity-40"
                   >
@@ -661,7 +532,7 @@ export const Admin: React.FC = () => {
 
                   <button
                     type="button"
-                    disabled={rowSectionDisabled || driveConnected !== true || driveStatus?.configOk === false}
+                    disabled={rowSectionDisabled || !configOk}
                     onClick={() => void handleDeleteTrack(track.id, track.title)}
                     className="text-xs font-bold px-3 py-2 rounded-full border border-red-500/40 text-red-300 hover:bg-red-500/10 disabled:opacity-40"
                   >

@@ -70,14 +70,14 @@ async function getRow(trackId: string): Promise<Row | undefined> {
 }
 
 /**
- * Drive プロキシ URL は `<audio src>` 直付けだと Range/デコード周りで環境によって
+ * Legacy API proxy URLs は `<audio src>` 直付けだと Range/デコード周りで環境によって
  * MEDIA_ERR_SRC_NOT_SUPPORTED になることがあるため、フル取得した Blob を `blob:` で渡す。
  * LRU で再訪問時はディスクキャッシュ相当。
  */
 export async function resolveAudioSource(trackId: string, streamUrl: string): Promise<string> {
-  const isDriveProxy =
+  const isLegacyProxy =
     streamUrl.startsWith('/api/media/audio/') || streamUrl.includes('/api/media/audio/');
-  if (!isDriveProxy) {
+  if (!isLegacyProxy) {
     return streamUrl;
   }
 

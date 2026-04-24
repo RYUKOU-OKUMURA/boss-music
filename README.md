@@ -1,24 +1,23 @@
 # NeonPulse — Ambient Space
 
-React（Vite）フロントと Express API。**Firebase は使いません。** 音声・ジャケット・**曲一覧（カタログ）**はすべて **Google Drive** 上のファイルとして保持され、API が Drive API で読み書きします。
+React（Vite）フロントと Express API。音声・ジャケット画像は **Vercel Blob**、曲一覧は **Neon Postgres** に保存します。Firebase / Google Drive / Redis は使いません。
 
 ## 構成
 
-- **メディア**: Drive のフォルダ内にアップロード。公開再生は `/api/media/audio|image/:fileId`（`Range` 対応）。
-- **カタログ**: 同じフォルダ内の `boss-music-catalog.json`（初回アクセス時に自動作成）。トラックのメタデータと `driveAudioFileId` / `driveCoverFileId` を保持。
-- **管理者**: Drive OAuth のリフレッシュトークンをサーバーに保存。管理 API は **セッション Cookie**（`SESSION_SECRET` で署名）または **`X-Admin-Secret`**（`ADMIN_SECRET`）で保護。
-- **Vercel 本番アップロード**: 管理画面で Google に再認証し、**MP3 / 画像本体はブラウザから Google Drive に直接送信**します。サーバーは catalog 更新だけ担当します。
+- **メディア**: 管理画面から Public Vercel Blob へブラウザ直アップロード。公開再生は Blob の HTTPS URL を直接使います。
+- **曲情報**: Neon Postgres の `tracks` テーブルに保存。API は `/api/tracks` で公開用トラック一覧を返します。
+- **管理者**: 管理 API は **セッション Cookie**（`SESSION_SECRET` で署名）または **`X-Admin-Secret`**（`ADMIN_SECRET`）で保護。
+- **アップロード制限**: MP3 最大 150MB、画像は JPG / PNG / WEBP 最大 10MB。
 
 ## セットアップ
 
 1. `npm install`
-2. `.env.local` を [`.env.example`](.env.example) を見て作成
-3. Google Cloud で **Google Drive API** を有効化し、OAuth クライアント（ウェブ）を作成。リダイレクト URI に  
-   `http://localhost:3000/api/auth/google/callback`  
-   を登録。スコープは `https://www.googleapis.com/auth/drive`
-4. Drive でフォルダを作成し、URL から **フォルダ ID** を `GOOGLE_DRIVE_FOLDER_ID` に設定
-5. `TOKEN_ENCRYPTION_KEY`（長いランダム文字列）と、管理者用に **`SESSION_SECRET`**（16文字以上）と **`ADMIN_SECRET`**（任意だがローカルでは推奨）を設定
-6. 開発時は `ADMIN_SECRET` と同じ値を `VITE_ADMIN_SECRET` にも入れると、管理画面で毎回シークレットを入力しなくてよい（**本番ビルドに秘密を埋め込まないこと**）
+2. Vercel Blob の Public Store を作成し、`BLOB_READ_WRITE_TOKEN` を設定
+3. Neon Free DB を作成し、`DATABASE_URL` を設定
+4. `.env.local` を [`.env.example`](.env.example) を見て作成
+5. ローカルでは `ADMIN_SECRET` と同じ値を `VITE_ADMIN_SECRET` にも入れると、管理画面で毎回シークレットを入力しなくてよい
+
+`tracks` テーブルは API 起動時に自動作成されます。手動で作る場合は [`migrations/001_create_tracks.sql`](migrations/001_create_tracks.sql) を Neon の SQL Editor で実行してください。
 
 ## 開発
 
@@ -26,26 +25,21 @@ React（Vite）フロントと Express API。**Firebase は使いません。** 
 npm run dev:all
 ```
 
-（Vite は API が `8787` で待ち受けてから起動するので、起動直後のプロキシ `ECONNREFUSED` を避けています。`API_PORT` を変えた場合は `package.json` の `wait-on` も合わせてください。）
-
 - フロント: http://localhost:3000（`/api` は Vite が 8787 にプロキシ）
 - API: http://localhost:8787
 
 ### 初回
 
 1. `/admin` を開く
-2. **Drive と連携する**で OAuth 完了（別タブ）。`SESSION_SECRET` があると管理者用 Cookie が付く
-3. 曲をアップロード（Cookie または `ADMIN_SECRET` / `VITE_ADMIN_SECRET` で認証）。本番の正式サポートは **MP3 最大 150MB**、画像は **JPG / PNG / WEBP 最大 10MB**。
-4. Vercel 本番では、初回アップロード時だけ Google Drive 権限を許可し、以後は **サーバー連携済みと同じ Google アカウント** を継続利用する
-
-カタログファイル ID は、Redis 未使用時は `data/catalog-file-id.txt` に保存されます（`.gitignore` 済み）。Vercel（パターン B）では **Redis** に保存します。
+2. 管理者シークレットを入力、または `VITE_ADMIN_SECRET` を設定
+3. 曲をアップロード
+4. `/api/tracks` と公開画面で再生確認
 
 ### 管理者認証が 401 のとき
 
-- **`SESSION_SECRET` は 16 文字以上**。満たないと Cookie は発行されません。設定後は **API を再起動**し、**Drive と連携するをもう一度**（既存 Cookie は無効になります）。
-- **`OAUTH_REDIRECT_URI` のポート**を、実際に開いている URL（例: Vite が `3001` に逃げているなら `http://localhost:3001/...`）と揃える。
-- **`VITE_ADMIN_SECRET` を変えたら Vite を再起動**（`dev:all` を止めて起動し直し）。`import.meta.env` は起動時に固定されます。
-- **`ADMIN_SECRET` と `VITE_ADMIN_SECRET`（または画面の管理者シークレット入力）**は **完全一致**（余計な引用符や全角スペースなし）。
+- **`ADMIN_SECRET` と `VITE_ADMIN_SECRET`（または画面の管理者シークレット入力）**が完全一致しているか確認
+- **`VITE_ADMIN_SECRET` を変えたら Vite を再起動**。`import.meta.env` は起動時に固定されます。
+- Cookie を使う場合は `SESSION_SECRET` を16文字以上にし、`X-Admin-Secret` 付きで `POST /api/admin/session` を呼ぶと Cookie が発行されます。
 
 ## 本番（同一プロセスで静的＋API）
 
@@ -56,45 +50,26 @@ NODE_ENV=production npm start
 
 `NODE_ENV=production` では Express が `dist/` を静的配信し、未マッチのパスは SPA の `index.html` にフォールバックします。
 
-## ドキュメント
-
-詳細な設計メモは [`docs/`](docs/README.md) を参照してください。
-
 ## Vercel デプロイ
 
-### パターン B（本リポジトリの既定: 静的 + Serverless API を同一プロジェクト）
-
-- **構成**: [`api/index.ts`](api/index.ts) は [`createApiApp()`](server/app.ts) を **そのまま default export**（[Vercel の Express 向け公式](https://vercel.com/docs/frameworks/backend/express)）。`serverless-http` は使わない（Lambda 向けで Vercel では 500 になり得る）。[`vercel.json`](vercel.json) に `includeFiles: server/**` を付け、関数バンドルにサーバー側コードを含めます。`rewrites` で `/api/*` をこの関数へ流します。フロントは `npm run build` の `dist/`、SPA は `index.html` への rewrite。
-- **永続化（本番必須）**: Serverless ではローカルファイルが共有されないため、**Vercel の Storage で Redis（Upstash）** をプロジェクトに接続し、環境変数 **`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`** が入るようにします（ダッシュボードの Integrations から追加）。これによりリフレッシュトークン（暗号化済み）・OAuth state・カタログ fileId が Redis に保存されます。**Vercel 本番で Redis 未設定の場合、Drive 連携と `/api/admin/google-upload-config` は明示エラーになります。**
-- **OAuth**: 本番の `OAUTH_REDIRECT_URI` を `https://<あなたのドメイン>/api/auth/google/callback` にし、Google Cloud の承認済みリダイレクト URI と一致させます。
-- **アップロード方式**: `/api/admin/google-upload-config` で Google クライアント設定と連携済みアカウント情報を返し、管理画面は Google Identity Services で同じ Google アカウントを選ばせたうえで Drive API に直接アップロードします。`/api/admin/upload/complete` はアップロード済み fileId を検証して catalog に反映します。旧 `/api/admin/upload` はローカル専用です。
-- **制約**: Vercel Function に大きい MP3 を直接送る構成ではなく、Drive 直送に切り替えています。アップロード再開は Google Drive の resumable upload に依存します。
-- **フロント**: 同一オリジンなので **`VITE_API_BASE_URL` は未設定のまま**でよい（相対 `/api`）。
+- **構成**: [`api/_handler.ts`](api/_handler.ts) は [`createApiApp()`](server/app.ts) を default export。`rewrites` で `/api/*` をこの関数へ流します。
+- **必須 Environment Variables**: `DATABASE_URL`, `BLOB_READ_WRITE_TOKEN`, `ADMIN_SECRET`
+- **推奨 Environment Variables**: `SESSION_SECRET`
+- **フロント**: 同一オリジンなので通常 **`VITE_API_BASE_URL` は未設定**でよいです。本番で `VITE_ADMIN_SECRET` は埋め込まない運用を推奨します。
 
 ### 本番チェックリスト
 
-1. Vercel の Environment Variables に `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` / `OAUTH_REDIRECT_URI` / `GOOGLE_DRIVE_FOLDER_ID` / `TOKEN_ENCRYPTION_KEY` / `SESSION_SECRET` / `UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` を設定
-2. Google Cloud Console の OAuth クライアントで `Authorized JavaScript origins` に `https://<本番ドメイン>` を追加
-3. 同じ OAuth クライアントの `Authorized redirect URIs` に `https://<本番ドメイン>/api/auth/google/callback` を追加
-4. `/api/admin/drive-status` で `storage: "redis"` と `configOk: true` を確認
-5. `/admin` から同じ Google アカウントで MP3 と画像をアップロードして再生確認
+1. Vercel Blob Store を作成し、`BLOB_READ_WRITE_TOKEN` が入っていることを確認
+2. Neon DB を作成し、`DATABASE_URL` を設定
+3. `ADMIN_SECRET` と必要なら `SESSION_SECRET` を設定
+4. `/api/admin/storage-status` で `configOk: true` を確認
+5. `/admin` から MP3 と画像をアップロードして再生確認
 
-### パターン A（API だけ別ホストに置く場合）
+## 移行メモ
 
-- **Vercel** は `dist/` のみ。Express は Railway / Render 等。
-- 本番ビルド時に **`VITE_API_BASE_URL`** に API のオリジンを設定する。
-- **CORS** が必要になることがある（このリポジトリの API は CORS ミドルウェア未実装のため、別オリジンから叩く場合は API 側の対応が別途必要）。
-
-### 環境変数（Vercel・パターン B）
-
-- 既存の `GOOGLE_*`、`OAUTH_REDIRECT_URI`、`TOKEN_ENCRYPTION_KEY`、`SESSION_SECRET`、`ADMIN_SECRET`、`GOOGLE_DRIVE_FOLDER_ID` に加え、**`UPSTASH_REDIS_REST_URL`** と **`UPSTASH_REDIS_REST_TOKEN`**（Redis 連携）。
-- 任意: **`GOOGLE_DRIVE_CATALOG_FILE_ID`**（カタログ Drive ファイル ID を固定したい場合）。
-
-## Firestore / Firebase からの移行
-
-以前 Firestore にあったトラックは、**Drive に音声・画像を再アップロード**し、管理画面から登録し直すか、`boss-music-catalog.json` を手編集（非推奨）で合わせてください。Firebase の設定ファイルは不要です。
+この構成では既存の Google Drive カタログは自動移行しません。切替後の曲一覧は空から始まり、既存曲は管理画面から再アップロードします。
 
 ## セキュリティ
 
-- `fileId` が分かると `/api/media/...` 経由でメディアを取得できる設計です（ポートフォリオ想定）。
-- `ADMIN_SECRET` と `VITE_ADMIN_SECRET` は漏洩すると不正アップロードに使われます。本番では Cookie 認証中心にし、フロントに秘密を入れない運用を推奨します。
+- Blob は Public Store のため、URL を知っている人は音源・画像へ直接アクセスできます。
+- `ADMIN_SECRET` と `VITE_ADMIN_SECRET` は漏洩すると不正アップロードに使われます。本番ではフロントに秘密を入れず、Cookie または都度入力で運用してください。

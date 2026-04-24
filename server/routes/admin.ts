@@ -1,29 +1,43 @@
-import crypto from 'crypto';
 import { Router } from 'express';
-import { loadRefreshToken } from '../services/tokenStore';
-import { getConnectedDriveUser, getDrive, getDriveFolderId } from '../services/driveClient';
+import { handleUpload, type HandleUploadBody } from '@vercel/blob/client';
 import {
-  addTrackAndSave,
-  readCatalog,
+  allowedContentTypes,
+  deleteBlobIfPresent,
+  maxUploadBytes,
+  parseUploadKind,
+  verifyBlobUpload,
+  type BlobUploadPayload,
+  type UploadKind,
+} from '../services/blobUploads';
+import {
+  addTrack,
+  ensureTracksSchema,
   removeTrackById,
   updateTrackCoverById,
-  type TrackRow,
-} from '../services/catalog';
-import { deleteDriveFileIfPresent, verifyDriveUpload } from '../services/driveUploads';
-import { getPersistenceStatus } from '../services/runtimeEnv';
-import { requireAdmin } from '../middleware/adminAuth';
+  type UploadedBlobRef,
+} from '../services/tracksDb';
+import { adminCookieName, createAdminSessionToken, requireAdmin } from '../middleware/adminAuth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { toPublicTrack } from '../utils/trackPublic';
 
 export const adminRouter = Router();
 
 interface UploadCompleteBody {
+  trackId?: string;
   title?: string;
   artist?: string;
   description?: string;
   tags?: string[] | string;
-  audioFileId?: string;
-  imageFileId?: string;
+  audio?: BlobUploadPayload;
+  cover?: BlobUploadPayload;
+}
+
+interface CoverUpdateBody {
+  image?: BlobUploadPayload;
+}
+
+interface BlobClientPayload {
+  kind?: UploadKind;
 }
 
 function splitTags(input: string[] | string | undefined): string[] {
@@ -38,6 +52,16 @@ function splitTags(input: string[] | string | undefined): string[] {
     .filter(Boolean);
 }
 
+function parseClientPayload(payload: string | null): BlobClientPayload {
+  if (!payload) return {};
+  try {
+    const parsed = JSON.parse(payload) as BlobClientPayload;
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function isValidationError(error: unknown): error is Error & { code?: string } {
   return typeof error === 'object' && error !== null && 'code' in error;
 }
@@ -46,49 +70,88 @@ function isTrackNotFound(error: unknown): boolean {
   return isValidationError(error) && error.code === 'TRACK_NOT_FOUND';
 }
 
-interface CoverUpdateBody {
-  imageFileId?: string;
+function isUuidLike(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function ensureExpectedPath(kind: UploadKind, pathname: string): void {
+  const audio = /^tracks\/([0-9a-f-]+)\/audio-[a-zA-Z0-9_-]+\.(mp3)$/i;
+  const image = /^tracks\/([0-9a-f-]+)\/cover-[a-zA-Z0-9_-]+\.(jpg|jpeg|png|webp)$/i;
+  const match = kind === 'audio' ? audio.exec(pathname) : image.exec(pathname);
+  if (!match?.[1] || !isUuidLike(match[1])) {
+    const err = new Error('Blob upload pathname is not allowed') as Error & { code?: string };
+    err.code = 'UPLOAD_VALIDATION_FAILED';
+    throw err;
+  }
+}
+
+function getStorageStatus() {
+  const missing: string[] = [];
+  if (!process.env.DATABASE_URL?.trim()) missing.push('DATABASE_URL');
+  if (!process.env.BLOB_READ_WRITE_TOKEN?.trim()) missing.push('BLOB_READ_WRITE_TOKEN');
+  return {
+    configOk: missing.length === 0,
+    storage: 'vercel-blob+neon',
+    missing,
+    reason: missing.length ? `${missing.join(', ')} is required` : undefined,
+  };
 }
 
 adminRouter.get(
-  '/admin/drive-status',
+  '/admin/storage-status',
   asyncHandler(async (_req, res) => {
-    const persistence = getPersistenceStatus();
-    if (!persistence.configOk) {
-      res.json({
-        connected: false,
-        storage: persistence.storage,
-        configOk: false,
-        reason: persistence.reason,
-      });
-      return;
+    const status = getStorageStatus();
+    if (status.configOk) {
+      try {
+        await ensureTracksSchema();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Database connection failed';
+        res.json({ ...status, configOk: false, reason: message });
+        return;
+      }
     }
-
-    const rt = await loadRefreshToken();
-    res.json({
-      connected: Boolean(rt),
-      storage: persistence.storage,
-      configOk: true,
-    });
+    res.json(status);
   })
 );
 
 adminRouter.post(
-  '/admin/google-upload-config',
+  '/admin/session',
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const token = createAdminSessionToken();
+    if (token) {
+      res.cookie(adminCookieName, token, {
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 7 * 24 * 60 * 60 * 1000,
+      });
+    }
+    res.json({ ok: true, cookieSet: Boolean(token) });
+  })
+);
+
+adminRouter.post(
+  '/admin/blob-upload',
   requireAdmin,
   asyncHandler(async (req, res) => {
-    const clientId = process.env.GOOGLE_CLIENT_ID?.trim();
-    if (!clientId) {
-      res.status(500).json({ error: 'GOOGLE_CLIENT_ID is required' });
-      return;
-    }
-    const folderId = getDriveFolderId();
-    const user = await getConnectedDriveUser();
-    res.json({
-      clientId,
-      folderId,
-      connectedUser: user,
+    const jsonResponse = await handleUpload({
+      request: req,
+      body: req.body as HandleUploadBody,
+      onBeforeGenerateToken: async (pathname, clientPayload) => {
+        const parsed = parseClientPayload(clientPayload);
+        const kind = parseUploadKind(parsed.kind);
+        ensureExpectedPath(kind, pathname);
+        return {
+          allowedContentTypes: allowedContentTypes(kind),
+          maximumSizeInBytes: maxUploadBytes(kind),
+          addRandomSuffix: false,
+          allowOverwrite: false,
+          tokenPayload: JSON.stringify({ kind }),
+        };
+      },
     });
+    res.json(jsonResponse);
   })
 );
 
@@ -97,56 +160,49 @@ adminRouter.post(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const body = (req.body ?? {}) as UploadCompleteBody;
+    const trackId = String(body.trackId ?? '').trim();
     const title = String(body.title ?? '').trim();
     const artist = String(body.artist ?? '').trim();
     const description = String(body.description ?? '').trim();
-    const audioFileId = String(body.audioFileId ?? '').trim();
-    const imageFileId = String(body.imageFileId ?? '').trim();
     const tags = splitTags(body.tags);
 
+    if (!trackId || !isUuidLike(trackId)) {
+      res.status(400).json({ error: 'valid trackId is required' });
+      return;
+    }
     if (!title || !artist) {
       res.status(400).json({ error: 'title and artist are required' });
       return;
     }
-    if (!audioFileId) {
-      res.status(400).json({ error: 'audioFileId is required' });
+    if (!body.audio) {
+      res.status(400).json({ error: 'audio blob metadata is required' });
       return;
     }
 
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-    let verifiedAudio: { fileId: string } | null = null;
-    let verifiedImage: { fileId: string } | null = null;
+    let audio: UploadedBlobRef | null = null;
+    let cover: UploadedBlobRef | undefined;
 
     try {
-      verifiedAudio = await verifyDriveUpload(drive, audioFileId, 'audio', folderId);
-      if (imageFileId) {
-        verifiedImage = await verifyDriveUpload(drive, imageFileId, 'image', folderId);
+      audio = await verifyBlobUpload('audio', body.audio);
+      ensureExpectedPath('audio', audio.pathname);
+      if (body.cover) {
+        cover = await verifyBlobUpload('image', body.cover);
+        ensureExpectedPath('image', cover.pathname);
       }
 
-      const track: TrackRow = {
-        id: crypto.randomUUID(),
+      const track = await addTrack({
+        id: trackId,
         title,
         artist,
         description,
-        createdAt: new Date().toISOString().split('T')[0],
         tags,
-        playable: true,
-        order: -1,
-        driveAudioFileId: verifiedAudio.fileId,
-        ...(verifiedImage ? { driveCoverFileId: verifiedImage.fileId } : {}),
-      };
-
-      await addTrackAndSave(drive, folderId, track);
+        audio,
+        ...(cover ? { cover } : {}),
+      });
       res.json({ track: toPublicTrack(track) });
     } catch (error) {
-      if (verifiedAudio) {
-        await deleteDriveFileIfPresent(drive, verifiedAudio.fileId);
-      }
-      if (verifiedImage) {
-        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
-      }
-
+      if (audio) await deleteBlobIfPresent(audio.pathname);
+      if (cover) await deleteBlobIfPresent(cover.pathname);
       const err = error as Error & { code?: string };
       if (isValidationError(error) && err.code === 'UPLOAD_VALIDATION_FAILED') {
         res.status(400).json({ error: err.message });
@@ -163,7 +219,7 @@ adminRouter.post(
   asyncHandler(async (_req, res) => {
     res.status(410).json({
       error:
-        'Legacy multipart upload is retired. Use browser-direct Google Drive upload from /admin and finish with /api/admin/upload/complete.',
+        'Legacy multipart upload is retired. Use browser-direct Vercel Blob upload from /admin and finish with /api/admin/upload/complete.',
     });
   })
 );
@@ -174,57 +230,35 @@ adminRouter.post(
   asyncHandler(async (req, res) => {
     const id = String(req.params.id ?? '').trim();
     const body = (req.body ?? {}) as CoverUpdateBody;
-    const imageFileId = String(body.imageFileId ?? '').trim();
     if (!id) {
       res.status(400).json({ error: 'id is required' });
       return;
     }
-    if (!imageFileId) {
-      res.status(400).json({ error: 'imageFileId is required' });
+    if (!body.image) {
+      res.status(400).json({ error: 'image blob metadata is required' });
       return;
     }
 
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-
-    let verifiedImage: { fileId: string } | null = null;
+    let image: UploadedBlobRef | null = null;
     try {
-      verifiedImage = await verifyDriveUpload(drive, imageFileId, 'image', folderId);
+      image = await verifyBlobUpload('image', body.image);
+      ensureExpectedPath('image', image.pathname);
+      const { track, oldCoverPath } = await updateTrackCoverById(id, image);
+      if (oldCoverPath && oldCoverPath !== image.pathname) {
+        await deleteBlobIfPresent(oldCoverPath);
+      }
+      res.json({ track: toPublicTrack(track) });
     } catch (error) {
+      if (image) await deleteBlobIfPresent(image.pathname);
       const err = error as Error & { code?: string };
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: 'Track not found' });
+        return;
+      }
       if (isValidationError(error) && err.code === 'UPLOAD_VALIDATION_FAILED') {
         res.status(400).json({ error: err.message });
         return;
       }
-      throw error;
-    }
-
-    try {
-      const { catalog } = await readCatalog(drive, folderId);
-      const existing = catalog.tracks.find((t) => t.id === id);
-      if (!existing) {
-        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
-        res.status(404).json({ error: 'Track not found' });
-        return;
-      }
-      const oldCoverId = existing.driveCoverFileId;
-
-      await updateTrackCoverById(drive, folderId, id, verifiedImage.fileId);
-
-      if (oldCoverId && oldCoverId !== verifiedImage.fileId) {
-        await deleteDriveFileIfPresent(drive, oldCoverId);
-      }
-
-      const { catalog: after } = await readCatalog(drive, folderId);
-      const updated = after.tracks.find((t) => t.id === id);
-      res.json({ track: updated ? toPublicTrack(updated) : null });
-    } catch (error) {
-      if (isTrackNotFound(error)) {
-        await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
-        res.status(404).json({ error: 'Track not found' });
-        return;
-      }
-      await deleteDriveFileIfPresent(drive, verifiedImage.fileId);
       throw error;
     }
   })
@@ -240,19 +274,10 @@ adminRouter.delete(
       return;
     }
 
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-
-    let oldCoverId: string | undefined;
     try {
-      const { catalog } = await readCatalog(drive, folderId);
-      const existing = catalog.tracks.find((t) => t.id === id);
-      if (!existing) {
-        res.status(404).json({ error: 'Track not found' });
-        return;
-      }
-      oldCoverId = existing.driveCoverFileId;
-      await updateTrackCoverById(drive, folderId, id, undefined);
+      const { track, oldCoverPath } = await updateTrackCoverById(id, null);
+      await deleteBlobIfPresent(oldCoverPath);
+      res.json({ track: toPublicTrack(track) });
     } catch (error) {
       if (isTrackNotFound(error)) {
         res.status(404).json({ error: 'Track not found' });
@@ -260,14 +285,6 @@ adminRouter.delete(
       }
       throw error;
     }
-
-    if (oldCoverId) {
-      await deleteDriveFileIfPresent(drive, oldCoverId);
-    }
-
-    const { catalog } = await readCatalog(drive, folderId);
-    const updated = catalog.tracks.find((t) => t.id === id);
-    res.json({ track: updated ? toPublicTrack(updated) : null });
   })
 );
 
@@ -286,13 +303,9 @@ adminRouter.delete(
       req.query.keepFiles === 'true' ||
       String(req.query.keepFiles ?? '').toLowerCase() === 'yes';
 
-    const drive = await getDrive();
-    const folderId = getDriveFolderId();
-
-    let removed: TrackRow;
+    let removed;
     try {
-      const result = await removeTrackById(drive, folderId, id);
-      removed = result.removed;
+      removed = await removeTrackById(id);
     } catch (error) {
       if (isTrackNotFound(error)) {
         res.status(404).json({ error: 'Track not found' });
@@ -301,28 +314,18 @@ adminRouter.delete(
       throw error;
     }
 
-    const fileDeleteErrors: string[] = [];
+    const fileDeleteWarnings: string[] = [];
     if (!keepFiles) {
-      try {
-        await drive.files.delete({ fileId: removed.driveAudioFileId, supportsAllDrives: true });
-      } catch (e) {
-        console.error('Failed to delete audio file after track removal', e);
-        fileDeleteErrors.push('audio');
-      }
-      if (removed.driveCoverFileId) {
-        try {
-          await drive.files.delete({ fileId: removed.driveCoverFileId, supportsAllDrives: true });
-        } catch (e) {
-          console.error('Failed to delete cover file after track removal', e);
-          fileDeleteErrors.push('cover');
-        }
-      }
+      const audioDeleted = await deleteBlobIfPresent(removed.audioPath);
+      if (!audioDeleted) fileDeleteWarnings.push('audio');
+      const coverDeleted = await deleteBlobIfPresent(removed.coverPath);
+      if (!coverDeleted) fileDeleteWarnings.push('cover');
     }
 
     res.json({
       ok: true,
       id: removed.id,
-      ...(fileDeleteErrors.length > 0 ? { fileDeleteWarnings: fileDeleteErrors } : {}),
+      ...(fileDeleteWarnings.length > 0 ? { fileDeleteWarnings } : {}),
     });
   })
 );

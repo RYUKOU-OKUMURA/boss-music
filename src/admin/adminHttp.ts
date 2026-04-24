@@ -64,23 +64,11 @@ export function parseErrorMessage(raw: string): string {
 
 export function explainUploadError(message: string): string {
   const lower = message.toLowerCase();
-  if (lower.includes('google authorization popup was blocked or closed')) {
-    return (
-      'Google 認証ポップアップが閉じられたか、OAuth 設定が一致していません。Google Cloud Console の OAuth クライアントで ' +
-      'Authorized JavaScript origins に本番URL、Authorized redirect URIs に /api/auth/google/callback を追加してください。'
-    );
+  if (lower.includes('blob') || lower.includes('vercel')) {
+    return 'Vercel Blob へのアップロードに失敗しました。BLOB_READ_WRITE_TOKEN とファイル形式を確認してください。';
   }
-  if (lower.includes('origin_mismatch') || lower.includes('redirect_uri_mismatch')) {
-    return (
-      'Google OAuth 設定が一致していません。Authorized JavaScript origins に本番URL、Authorized redirect URIs に ' +
-      '/api/auth/google/callback を追加してください。'
-    );
-  }
-  if (lower.includes('access_denied')) {
-    return 'Google Drive へのアクセスが拒否されました。権限を許可して、同じ Google アカウントで再実行してください。';
-  }
-  if (lower.includes('google drive upload request failed')) {
-    return 'Google Drive へのアップロード通信に失敗しました。回線状態を確認して、もう一度アップロードしてください。';
+  if (lower.includes('database') || lower.includes('database_url')) {
+    return 'Neon DB への接続に失敗しました。DATABASE_URL を確認してください。';
   }
   return message;
 }
