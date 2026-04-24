@@ -13,8 +13,11 @@ import {
 import {
   addTrack,
   ensureTracksSchema,
+  renamePlaylist,
   removeTrackById,
   updateTrackCoverById,
+  updateTrackMetadataById,
+  updateTrackOrder,
   updateTrackPlaylistById,
   type UploadedBlobRef,
 } from '../services/tracksDb';
@@ -41,6 +44,22 @@ interface CoverUpdateBody {
 
 interface PlaylistUpdateBody {
   playlist?: string;
+}
+
+interface ReorderTracksBody {
+  trackIds?: unknown;
+}
+
+interface TrackMetadataUpdateBody {
+  title?: unknown;
+  artist?: unknown;
+  description?: unknown;
+  playlist?: unknown;
+}
+
+interface PlaylistRenameBody {
+  from?: unknown;
+  to?: unknown;
 }
 
 interface BlobClientPayload {
@@ -75,6 +94,10 @@ function isValidationError(error: unknown): error is Error & { code?: string } {
 
 function isTrackNotFound(error: unknown): boolean {
   return isValidationError(error) && error.code === 'TRACK_NOT_FOUND';
+}
+
+function isTrackValidationError(error: unknown): boolean {
+  return isValidationError(error) && error.code === 'TRACK_VALIDATION_FAILED';
 }
 
 function isUuidLike(value: string): boolean {
@@ -241,6 +264,102 @@ adminRouter.post(
       const err = error as Error & { code?: string };
       if (isValidationError(error) && err.code === 'UPLOAD_VALIDATION_FAILED') {
         res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+
+adminRouter.post(
+  '/admin/tracks/reorder',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as ReorderTracksBody;
+    if (!Array.isArray(body.trackIds)) {
+      res.status(400).json({ error: 'trackIds is required' });
+      return;
+    }
+
+    const trackIds = body.trackIds.map((id) => String(id ?? '').trim()).filter(Boolean);
+    if (trackIds.length !== body.trackIds.length) {
+      res.status(400).json({ error: 'trackIds must contain valid ids' });
+      return;
+    }
+    if (new Set(trackIds).size !== trackIds.length) {
+      res.status(400).json({ error: 'trackIds must be unique' });
+      return;
+    }
+
+    try {
+      const tracks = await updateTrackOrder(trackIds);
+      res.json({ tracks: tracks.map(toPublicTrack) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: 'Track not found' });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+
+adminRouter.post(
+  '/admin/playlists/rename',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = (req.body ?? {}) as PlaylistRenameBody;
+    const from = String(body.from ?? '').trim();
+    const to = String(body.to ?? '').trim();
+
+    if (!from || !to) {
+      res.status(400).json({ error: 'from and to are required' });
+      return;
+    }
+
+    try {
+      const tracks = await renamePlaylist(from, to);
+      res.json({ tracks: tracks.map(toPublicTrack) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: 'Playlist not found' });
+        return;
+      }
+      if (isTrackValidationError(error)) {
+        res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid playlist rename' });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+
+adminRouter.post(
+  '/admin/tracks/:id',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? '').trim();
+    const body = (req.body ?? {}) as TrackMetadataUpdateBody;
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+
+    try {
+      const track = await updateTrackMetadataById(id, {
+        title: String(body.title ?? ''),
+        artist: String(body.artist ?? ''),
+        description: String(body.description ?? ''),
+        playlist: String(body.playlist ?? ''),
+      });
+      res.json({ track: toPublicTrack(track) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: 'Track not found' });
+        return;
+      }
+      if (isTrackValidationError(error)) {
+        res.status(400).json({ error: error instanceof Error ? error.message : 'Invalid track metadata' });
         return;
       }
       throw error;

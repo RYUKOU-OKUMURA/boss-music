@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type MouseEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAudioMain } from '../context/AudioContext';
 import type { Track } from '../context/AudioContext';
@@ -31,7 +31,7 @@ export interface UseTrackPagePlaybackResult {
   onPlayPause: () => void;
   toggleRepeatEnabled: () => void;
   toggleShuffleEnabled: () => void;
-  onVolumeBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onVolumeBarClick: (e: MouseEvent<HTMLDivElement>) => void;
 }
 
 export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
@@ -174,7 +174,7 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   }, [track, isCurrent, isPlaying, pause, play, trackIndex, activePlaylist]);
 
   const onVolumeBarClick = useCallback(
-    (e: React.MouseEvent<HTMLDivElement>) => {
+    (e: MouseEvent<HTMLDivElement>) => {
       const rect = e.currentTarget.getBoundingClientRect();
       const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
       setVolume(p);

@@ -105,6 +105,21 @@ function mapTrack(row: TrackRecord): TrackRow {
   };
 }
 
+function createTrackError(code: string, message: string): Error & { code: string } {
+  const err = new Error(message) as Error & { code: string };
+  err.code = code;
+  return err;
+}
+
+function normalizePlaylistValue(value: string): string {
+  return value.trim() || 'BGM';
+}
+
+function normalizeRequiredText(value: string): string | null {
+  const normalized = value.trim();
+  return normalized || null;
+}
+
 export async function ensureTracksSchema(): Promise<void> {
   if (!schemaReady) {
     const sql = getSql();
@@ -210,7 +225,7 @@ export async function addTrack(input: {
 
 export async function updateTrackPlaylistById(id: string, playlist: string): Promise<TrackRow> {
   await ensureTracksSchema();
-  const normalizedPlaylist = playlist.trim() || 'BGM';
+  const normalizedPlaylist = normalizePlaylistValue(playlist);
   const sql = getSql();
   const rows = (await sql`
     UPDATE tracks
@@ -229,6 +244,79 @@ export async function updateTrackPlaylistById(id: string, playlist: string): Pro
   return mapTrack(row);
 }
 
+export async function updateTrackOrder(trackIds: string[]): Promise<TrackRow[]> {
+  await ensureTracksSchema();
+  const sql = getSql();
+
+  if (trackIds.length > 0) {
+    const missing = (await sql`
+      WITH incoming AS (
+        SELECT id, MIN(ordinality) - 1 AS sort_order
+        FROM unnest(${trackIds}::text[]) WITH ORDINALITY AS input(id, ordinality)
+        GROUP BY id
+      )
+      SELECT incoming.id
+      FROM incoming
+      LEFT JOIN tracks ON tracks.id = incoming.id
+      WHERE tracks.id IS NULL
+      LIMIT 1
+    `) as Array<{ id: string }>;
+
+    if (missing[0]) {
+      throw createTrackError('TRACK_NOT_FOUND', 'Track not found');
+    }
+  }
+
+  await sql`
+    WITH incoming AS (
+      SELECT id, MIN(ordinality) - 1 AS sort_order
+      FROM unnest(${trackIds}::text[]) WITH ORDINALITY AS input(id, ordinality)
+      GROUP BY id
+    )
+    UPDATE tracks
+    SET
+      sort_order = incoming.sort_order,
+      updated_at = now()
+    FROM incoming
+    WHERE tracks.id = incoming.id
+  `;
+
+  return listTracks();
+}
+
+export async function updateTrackMetadataById(
+  id: string,
+  input: { title: string; artist: string; description: string; playlist: string }
+): Promise<TrackRow> {
+  await ensureTracksSchema();
+
+  const title = normalizeRequiredText(input.title);
+  const artist = normalizeRequiredText(input.artist);
+  if (!title || !artist) {
+    throw createTrackError('TRACK_VALIDATION_FAILED', 'Track validation failed');
+  }
+
+  const description = input.description.trim();
+  const playlist = normalizePlaylistValue(input.playlist);
+  const sql = getSql();
+  const rows = (await sql`
+    UPDATE tracks
+    SET
+      title = ${title},
+      artist = ${artist},
+      description = ${description},
+      playlist = ${playlist},
+      updated_at = now()
+    WHERE id = ${id}
+    RETURNING *
+  `) as TrackRecord[];
+  const row = rows[0];
+  if (!row) {
+    throw createTrackError('TRACK_NOT_FOUND', 'Track not found');
+  }
+  return mapTrack(row);
+}
+
 export async function findTrackById(id: string): Promise<TrackRow | null> {
   await ensureTracksSchema();
   const sql = getSql();
@@ -239,6 +327,38 @@ export async function findTrackById(id: string): Promise<TrackRow | null> {
     LIMIT 1
   `) as TrackRecord[];
   return rows[0] ? mapTrack(rows[0]) : null;
+}
+
+export async function renamePlaylist(from: string, to: string): Promise<TrackRow[]> {
+  await ensureTracksSchema();
+
+  const fromPlaylist = from.trim();
+  const toPlaylist = to.trim();
+  if (!fromPlaylist || !toPlaylist || fromPlaylist === toPlaylist) {
+    throw createTrackError('TRACK_VALIDATION_FAILED', 'Track validation failed');
+  }
+
+  const sql = getSql();
+  const existing = (await sql`
+    SELECT id
+    FROM tracks
+    WHERE COALESCE(NULLIF(BTRIM(playlist), ''), 'BGM') = ${fromPlaylist}
+    LIMIT 1
+  `) as Array<{ id: string }>;
+
+  if (!existing[0]) {
+    throw createTrackError('TRACK_NOT_FOUND', 'Track not found');
+  }
+
+  await sql`
+    UPDATE tracks
+    SET
+      playlist = ${toPlaylist},
+      updated_at = now()
+    WHERE COALESCE(NULLIF(BTRIM(playlist), ''), 'BGM') = ${fromPlaylist}
+  `;
+
+  return listTracks();
 }
 
 export async function updateTrackCoverById(

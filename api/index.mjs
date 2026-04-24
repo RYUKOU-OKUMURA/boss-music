@@ -59,6 +59,18 @@ function mapTrack(row) {
     ...row.cover_content_type ? { coverContentType: row.cover_content_type } : {}
   };
 }
+function createTrackError(code, message) {
+  const err = new Error(message);
+  err.code = code;
+  return err;
+}
+function normalizePlaylistValue(value) {
+  return value.trim() || "BGM";
+}
+function normalizeRequiredText(value) {
+  const normalized = value.trim();
+  return normalized || null;
+}
 async function ensureTracksSchema() {
   if (!schemaReady) {
     const sql = getSql();
@@ -150,7 +162,7 @@ async function addTrack(input) {
 }
 async function updateTrackPlaylistById(id, playlist) {
   await ensureTracksSchema();
-  const normalizedPlaylist = playlist.trim() || "BGM";
+  const normalizedPlaylist = normalizePlaylistValue(playlist);
   const sql = getSql();
   const rows = await sql`
     UPDATE tracks
@@ -168,6 +180,68 @@ async function updateTrackPlaylistById(id, playlist) {
   }
   return mapTrack(row);
 }
+async function updateTrackOrder(trackIds) {
+  await ensureTracksSchema();
+  const sql = getSql();
+  if (trackIds.length > 0) {
+    const missing = await sql`
+      WITH incoming AS (
+        SELECT id, MIN(ordinality) - 1 AS sort_order
+        FROM unnest(${trackIds}::text[]) WITH ORDINALITY AS input(id, ordinality)
+        GROUP BY id
+      )
+      SELECT incoming.id
+      FROM incoming
+      LEFT JOIN tracks ON tracks.id = incoming.id
+      WHERE tracks.id IS NULL
+      LIMIT 1
+    `;
+    if (missing[0]) {
+      throw createTrackError("TRACK_NOT_FOUND", "Track not found");
+    }
+  }
+  await sql`
+    WITH incoming AS (
+      SELECT id, MIN(ordinality) - 1 AS sort_order
+      FROM unnest(${trackIds}::text[]) WITH ORDINALITY AS input(id, ordinality)
+      GROUP BY id
+    )
+    UPDATE tracks
+    SET
+      sort_order = incoming.sort_order,
+      updated_at = now()
+    FROM incoming
+    WHERE tracks.id = incoming.id
+  `;
+  return listTracks();
+}
+async function updateTrackMetadataById(id, input) {
+  await ensureTracksSchema();
+  const title = normalizeRequiredText(input.title);
+  const artist = normalizeRequiredText(input.artist);
+  if (!title || !artist) {
+    throw createTrackError("TRACK_VALIDATION_FAILED", "Track validation failed");
+  }
+  const description = input.description.trim();
+  const playlist = normalizePlaylistValue(input.playlist);
+  const sql = getSql();
+  const rows = await sql`
+    UPDATE tracks
+    SET
+      title = ${title},
+      artist = ${artist},
+      description = ${description},
+      playlist = ${playlist},
+      updated_at = now()
+    WHERE id = ${id}
+    RETURNING *
+  `;
+  const row = rows[0];
+  if (!row) {
+    throw createTrackError("TRACK_NOT_FOUND", "Track not found");
+  }
+  return mapTrack(row);
+}
 async function findTrackById(id) {
   await ensureTracksSchema();
   const sql = getSql();
@@ -178,6 +252,32 @@ async function findTrackById(id) {
     LIMIT 1
   `;
   return rows[0] ? mapTrack(rows[0]) : null;
+}
+async function renamePlaylist(from, to) {
+  await ensureTracksSchema();
+  const fromPlaylist = from.trim();
+  const toPlaylist = to.trim();
+  if (!fromPlaylist || !toPlaylist || fromPlaylist === toPlaylist) {
+    throw createTrackError("TRACK_VALIDATION_FAILED", "Track validation failed");
+  }
+  const sql = getSql();
+  const existing = await sql`
+    SELECT id
+    FROM tracks
+    WHERE COALESCE(NULLIF(BTRIM(playlist), ''), 'BGM') = ${fromPlaylist}
+    LIMIT 1
+  `;
+  if (!existing[0]) {
+    throw createTrackError("TRACK_NOT_FOUND", "Track not found");
+  }
+  await sql`
+    UPDATE tracks
+    SET
+      playlist = ${toPlaylist},
+      updated_at = now()
+    WHERE COALESCE(NULLIF(BTRIM(playlist), ''), 'BGM') = ${fromPlaylist}
+  `;
+  return listTracks();
 }
 async function updateTrackCoverById(id, cover) {
   await ensureTracksSchema();
@@ -459,6 +559,9 @@ function isValidationError(error) {
 function isTrackNotFound(error) {
   return isValidationError(error) && error.code === "TRACK_NOT_FOUND";
 }
+function isTrackValidationError(error) {
+  return isValidationError(error) && error.code === "TRACK_VALIDATION_FAILED";
+}
 function isUuidLike(value) {
   return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
 }
@@ -609,6 +712,94 @@ adminRouter.post(
       const err = error;
       if (isValidationError(error) && err.code === "UPLOAD_VALIDATION_FAILED") {
         res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+adminRouter.post(
+  "/admin/tracks/reorder",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = req.body ?? {};
+    if (!Array.isArray(body.trackIds)) {
+      res.status(400).json({ error: "trackIds is required" });
+      return;
+    }
+    const trackIds = body.trackIds.map((id) => String(id ?? "").trim()).filter(Boolean);
+    if (trackIds.length !== body.trackIds.length) {
+      res.status(400).json({ error: "trackIds must contain valid ids" });
+      return;
+    }
+    if (new Set(trackIds).size !== trackIds.length) {
+      res.status(400).json({ error: "trackIds must be unique" });
+      return;
+    }
+    try {
+      const tracks = await updateTrackOrder(trackIds);
+      res.json({ tracks: tracks.map(toPublicTrack) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+adminRouter.post(
+  "/admin/playlists/rename",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = req.body ?? {};
+    const from = String(body.from ?? "").trim();
+    const to = String(body.to ?? "").trim();
+    if (!from || !to) {
+      res.status(400).json({ error: "from and to are required" });
+      return;
+    }
+    try {
+      const tracks = await renamePlaylist(from, to);
+      res.json({ tracks: tracks.map(toPublicTrack) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Playlist not found" });
+        return;
+      }
+      if (isTrackValidationError(error)) {
+        res.status(400).json({ error: error instanceof Error ? error.message : "Invalid playlist rename" });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+adminRouter.post(
+  "/admin/tracks/:id",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? "").trim();
+    const body = req.body ?? {};
+    if (!id) {
+      res.status(400).json({ error: "id is required" });
+      return;
+    }
+    try {
+      const track = await updateTrackMetadataById(id, {
+        title: String(body.title ?? ""),
+        artist: String(body.artist ?? ""),
+        description: String(body.description ?? ""),
+        playlist: String(body.playlist ?? "")
+      });
+      res.json({ track: toPublicTrack(track) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Track not found" });
+        return;
+      }
+      if (isTrackValidationError(error)) {
+        res.status(400).json({ error: error instanceof Error ? error.message : "Invalid track metadata" });
         return;
       }
       throw error;
