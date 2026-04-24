@@ -1,5 +1,4 @@
 import React, { useEffect } from 'react';
-import { Link } from 'react-router-dom';
 import { useTrackPageUi } from '../context/TrackPageUiContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { useTrackPagePlayback } from '../hooks/useTrackPagePlayback';
@@ -66,15 +65,16 @@ export const TrackPage: React.FC = () => {
         <div className="absolute inset-0 bg-[url('/textures/carbon-fibre.png')] opacity-[0.03] mix-blend-overlay" />
       </div>
 
-      <Link
-        to="/"
+      <button
+        type="button"
+        onClick={m.goToLibrary}
         className="fixed left-6 top-6 z-[60] inline-flex items-center gap-2 text-xs font-light tracking-[0.2em] text-white/40 transition-colors hover:text-white/90 md:left-10 md:top-8 md:text-sm"
         aria-label="ライブラリに戻る"
       >
         <ChevronLeft className="h-5 w-5 shrink-0" strokeWidth={1.25} />
         <span className="hidden sm:inline">ライブラリに戻る</span>
         <span className="sm:hidden">戻る</span>
-      </Link>
+      </button>
 
       <div className="fixed right-6 top-6 z-[60] flex items-center gap-3 md:right-10 md:top-8">
         <TrackPagePatternMenu placement="track" />

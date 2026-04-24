@@ -1,14 +1,8 @@
-import { useCallback, useEffect, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAudioMain } from '../context/AudioContext';
 import type { Track } from '../context/AudioContext';
-
-export function formatTrackTime(time: number) {
-  if (isNaN(time) || time === 0) return '0:00';
-  const mins = Math.floor(time / 60);
-  const secs = Math.floor(time % 60);
-  return `${mins}:${secs.toString().padStart(2, '0')}`;
-}
+import { pointerRatioInElement } from '../lib/playback';
 
 export interface UseTrackPagePlaybackResult {
   track: Track | null;
@@ -57,6 +51,7 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     toggleShuffleEnabled,
   } = useAudioMain();
   const [shareFeedback, setShareFeedback] = useState<'idle' | 'copied'>('idle');
+  const shareFeedbackTimerRef = useRef<number | null>(null);
 
   const trackIndex = tracks.findIndex((t) => t.id === id);
   const track = trackIndex >= 0 ? tracks[trackIndex] : undefined;
@@ -123,6 +118,14 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [goToLibrary, goAdjacentTrack]);
 
+  useEffect(() => {
+    return () => {
+      if (shareFeedbackTimerRef.current !== null) {
+        window.clearTimeout(shareFeedbackTimerRef.current);
+      }
+    };
+  }, []);
+
   const handleShare = useCallback(async () => {
     const url = window.location.href;
     const title = `${track?.title ?? ''} — BOSS-MUSIC`;
@@ -137,7 +140,13 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     try {
       await navigator.clipboard.writeText(url);
       setShareFeedback('copied');
-      window.setTimeout(() => setShareFeedback('idle'), 2000);
+      if (shareFeedbackTimerRef.current !== null) {
+        window.clearTimeout(shareFeedbackTimerRef.current);
+      }
+      shareFeedbackTimerRef.current = window.setTimeout(() => {
+        setShareFeedback('idle');
+        shareFeedbackTimerRef.current = null;
+      }, 2000);
     } catch {
       /* noop */
     }
@@ -175,9 +184,7 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
 
   const onVolumeBarClick = useCallback(
     (e: MouseEvent<HTMLDivElement>) => {
-      const rect = e.currentTarget.getBoundingClientRect();
-      const p = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-      setVolume(p);
+      setVolume(pointerRatioInElement(e.clientX, e.currentTarget));
     },
     [setVolume]
   );

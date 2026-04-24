@@ -172,10 +172,13 @@ export const Admin: React.FC = () => {
 
   const handleAudioFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0] ?? null;
-    setAudioFile(file);
-    if (!file) return;
-
     const gen = ++id3ParseGenRef.current;
+    setAudioFile(file);
+    if (!file) {
+      setId3Loading(false);
+      return;
+    }
+
     setId3Loading(true);
     void (async () => {
       try {

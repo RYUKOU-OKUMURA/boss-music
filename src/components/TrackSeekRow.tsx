@@ -1,6 +1,6 @@
 import React, { useCallback } from 'react';
 import { useAudioMain, useAudioTime } from '../context/AudioContext';
-import { formatTrackTime } from '../hooks/useTrackPagePlayback';
+import { clamp, formatPlaybackTime, pointerRatioInElement } from '../lib/playback';
 
 export type TrackSeekVariant = 'vinyl' | 'illustration' | 'spectrum';
 
@@ -21,13 +21,12 @@ export const TrackSeekRow: React.FC<TrackSeekRowProps> = ({
   const currentTime = useAudioTime();
   const displayTime = isCurrent ? currentTime : 0;
   const displayDuration = isCurrent && duration > 0 ? duration : 0;
-  const progress = displayDuration > 0 ? (displayTime / displayDuration) * 100 : 0;
+  const progress = displayDuration > 0 ? clamp((displayTime / displayDuration) * 100, 0, 100) : 0;
 
   const onSeekBarClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {
       if (!isCurrent || displayDuration <= 0) return;
-      const rect = e.currentTarget.getBoundingClientRect();
-      const percent = (e.clientX - rect.left) / rect.width;
+      const percent = pointerRatioInElement(e.clientX, e.currentTarget);
       seek(percent * displayDuration);
     },
     [isCurrent, displayDuration, seek]
@@ -39,7 +38,7 @@ export const TrackSeekRow: React.FC<TrackSeekRowProps> = ({
       if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
         e.preventDefault();
         const delta = e.key === 'ArrowLeft' ? -5 : 5;
-        seek(Math.max(0, Math.min(displayDuration, displayTime + delta)));
+        seek(clamp(displayTime + delta, 0, displayDuration));
       }
     },
     [isCurrent, displayDuration, displayTime, seek]
@@ -73,8 +72,8 @@ export const TrackSeekRow: React.FC<TrackSeekRowProps> = ({
         />
       </div>
       <div className={`mt-3 flex justify-between font-mono text-xs tabular-nums md:text-sm ${timeCls}`}>
-        <span>{formatTrackTime(displayTime)}</span>
-        <span>{formatTrackTime(displayDuration)}</span>
+        <span>{formatPlaybackTime(displayTime)}</span>
+        <span>{formatPlaybackTime(displayDuration)}</span>
       </div>
     </div>
   );

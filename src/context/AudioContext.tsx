@@ -12,6 +12,7 @@ import React, {
 import { useNavigate, useLocation } from 'react-router-dom';
 import { resolveAudioPlaybackUrl } from '../lib/mediaUrls';
 import { resolveAudioSource, revokeObjectUrl } from '../lib/audioCache';
+import { clamp, clamp01 } from '../lib/playback';
 
 export interface Track {
   id: string;
@@ -145,6 +146,18 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const currentTrack = tracks[currentTrackIndex] || null;
   const shuffleUpcomingTrack = nextShuffleTrackIndex !== null ? tracks[nextShuffleTrackIndex] ?? null : null;
+
+  useEffect(() => {
+    if (tracks.length === 0) {
+      setCurrentTrackIndex(0);
+      setNextShuffleTrackIndex(null);
+      setDuration(0);
+      setCurrentTime(0);
+      return;
+    }
+
+    setCurrentTrackIndex((index) => clamp(index, 0, tracks.length - 1));
+  }, [tracks.length]);
 
   const setActivePlaylist = useCallback((playlist: string | null) => {
     setActivePlaylistState(playlist?.trim() || null);
@@ -363,17 +376,22 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const seek = useCallback((time: number) => {
     if (audioRef.current) {
-      audioRef.current.currentTime = time;
+      const durationLimit = Number.isFinite(audioRef.current.duration) && audioRef.current.duration > 0
+        ? audioRef.current.duration
+        : Number.POSITIVE_INFINITY;
+      const nextTime = clamp(time, 0, durationLimit);
+      audioRef.current.currentTime = nextTime;
       lastTimeUiEmitRef.current = performance.now();
-      setCurrentTime(time);
+      setCurrentTime(nextTime);
     }
   }, []);
 
   const setVolume = useCallback((newVolume: number) => {
+    const nextVolume = clamp01(newVolume);
     if (audioRef.current) {
-      audioRef.current.volume = newVolume;
-      setVolumeState(newVolume);
+      audioRef.current.volume = nextVolume;
     }
+    setVolumeState(nextVolume);
   }, []);
 
   const mainContextValue = useMemo<AudioMainContextType>(
@@ -465,6 +483,16 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     return () => {
       cancelled = true;
       window.removeEventListener('boss-music-catalog-changed', reload);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (blobUrlRef.current) {
+        revokeObjectUrl(blobUrlRef.current);
+        blobUrlRef.current = null;
+      }
+      audioRef.current?.pause();
     };
   }, []);
 
@@ -575,6 +603,8 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     }
 
     lastTrackIdRef.current = track.id;
+    setCurrentTime(0);
+    setDuration(0);
     let cancelled = false;
 
     (async () => {

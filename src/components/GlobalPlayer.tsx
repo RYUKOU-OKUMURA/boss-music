@@ -1,6 +1,7 @@
 import React from 'react';
 import { useAudio } from '../context/AudioContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
+import { clamp, formatPlaybackTime, pointerRatioInElement } from '../lib/playback';
 import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2, Repeat2, Shuffle } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
@@ -30,14 +31,7 @@ export const GlobalPlayer: React.FC = () => {
 
   if (!currentTrack) return null;
 
-  const formatTime = (time: number) => {
-    if (isNaN(time)) return '0:00';
-    const mins = Math.floor(time / 60);
-    const secs = Math.floor(time % 60);
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const progress = duration > 0 ? (currentTime / duration) * 100 : 0;
+  const progress = duration > 0 ? clamp((currentTime / duration) * 100, 0, 100) : 0;
 
   return (
     <div className="fixed bottom-0 left-0 right-0 z-50 bg-surface/90 backdrop-blur-xl border-t border-white/5 px-6 py-3 flex items-center justify-between">
@@ -69,7 +63,7 @@ export const GlobalPlayer: React.FC = () => {
             <SkipBack className="w-5 h-5" fill="currentColor" />
           </button>
           <button
-            onClick={() => isPlaying ? pause() : play()}
+            onClick={() => (isPlaying ? pause() : play())}
             className="w-10 h-10 rounded-full bg-neon-cyan flex items-center justify-center text-black hover:scale-105 transition-transform shadow-[0_0_15px_rgba(143,245,255,0.4)]"
           >
             {isPlaying ? <Pause className="w-5 h-5" fill="currentColor" /> : <Play className="w-5 h-5 ml-1" fill="currentColor" />}
@@ -79,36 +73,34 @@ export const GlobalPlayer: React.FC = () => {
           </button>
         </div>
         <div className="w-full flex items-center gap-3 text-xs text-zen-mist/40 font-mono">
-          <span>{formatTime(currentTime)}</span>
-          <div 
+          <span>{formatPlaybackTime(currentTime)}</span>
+          <div
             className="flex-1 h-1 bg-white/10 rounded-full cursor-pointer relative group"
             onClick={(e) => {
-              const rect = e.currentTarget.getBoundingClientRect();
-              const percent = (e.clientX - rect.left) / rect.width;
+              if (duration <= 0) return;
+              const percent = pointerRatioInElement(e.clientX, e.currentTarget);
               seek(percent * duration);
             }}
           >
-            <div 
+            <div
               className="absolute top-0 left-0 h-full bg-gradient-to-r from-neon-cyan to-neon-green rounded-full group-hover:from-neon-cyan group-hover:to-neon-cyan transition-all"
               style={{ width: `${progress}%` }}
             />
           </div>
-          <span>{formatTime(duration)}</span>
+          <span>{formatPlaybackTime(duration)}</span>
         </div>
       </div>
 
       {/* Volume */}
       <div className="flex items-center justify-end gap-4 w-1/3">
         <Volume2 className="w-4 h-4 text-zen-mist/60" />
-        <div 
+        <div
           className="w-24 h-1 bg-white/10 rounded-full cursor-pointer relative"
           onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const percent = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            setVolume(percent);
+            setVolume(pointerRatioInElement(e.clientX, e.currentTarget));
           }}
         >
-          <div 
+          <div
             className="absolute top-0 left-0 h-full bg-neon-cyan rounded-full"
             style={{ width: `${volume * 100}%` }}
           />
