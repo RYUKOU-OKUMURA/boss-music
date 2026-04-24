@@ -15,6 +15,7 @@ import {
   ensureTracksSchema,
   removeTrackById,
   updateTrackCoverById,
+  updateTrackPlaylistById,
   type UploadedBlobRef,
 } from '../services/tracksDb';
 import { adminCookieName, createAdminSessionToken, requireAdmin } from '../middleware/adminAuth';
@@ -28,6 +29,7 @@ interface UploadCompleteBody {
   title?: string;
   artist?: string;
   description?: string;
+  playlist?: string;
   tags?: string[] | string;
   audio?: BlobUploadPayload;
   cover?: BlobUploadPayload;
@@ -35,6 +37,10 @@ interface UploadCompleteBody {
 
 interface CoverUpdateBody {
   image?: BlobUploadPayload;
+}
+
+interface PlaylistUpdateBody {
+  playlist?: string;
 }
 
 interface BlobClientPayload {
@@ -191,6 +197,7 @@ adminRouter.post(
     const title = String(body.title ?? '').trim();
     const artist = String(body.artist ?? '').trim();
     const description = String(body.description ?? '').trim();
+    const playlist = String(body.playlist ?? 'BGM').trim() || 'BGM';
     const tags = splitTags(body.tags);
 
     if (!trackId || !isUuidLike(trackId)) {
@@ -222,6 +229,7 @@ adminRouter.post(
         title,
         artist,
         description,
+        playlist,
         tags,
         audio,
         ...(cover ? { cover } : {}),
@@ -233,6 +241,35 @@ adminRouter.post(
       const err = error as Error & { code?: string };
       if (isValidationError(error) && err.code === 'UPLOAD_VALIDATION_FAILED') {
         res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+
+adminRouter.post(
+  '/admin/tracks/:id/playlist',
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? '').trim();
+    const body = (req.body ?? {}) as PlaylistUpdateBody;
+    const playlist = String(body.playlist ?? '').trim();
+    if (!id) {
+      res.status(400).json({ error: 'id is required' });
+      return;
+    }
+    if (!playlist) {
+      res.status(400).json({ error: 'playlist is required' });
+      return;
+    }
+
+    try {
+      const track = await updateTrackPlaylistById(id, playlist);
+      res.json({ track: toPublicTrack(track) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: 'Track not found' });
         return;
       }
       throw error;

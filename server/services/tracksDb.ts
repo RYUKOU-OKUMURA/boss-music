@@ -6,6 +6,7 @@ export interface TrackRow {
   artist: string;
   description: string;
   createdAt: string;
+  playlist: string;
   tags: string[];
   playable: boolean;
   order: number;
@@ -32,6 +33,7 @@ interface TrackRecord {
   artist: string;
   description: string | null;
   created_at: string | Date;
+  playlist: string | null;
   tags: unknown;
   playable: boolean;
   sort_order: number;
@@ -88,6 +90,7 @@ function mapTrack(row: TrackRecord): TrackRow {
     artist: row.artist,
     description: row.description ?? '',
     createdAt: dateOnly(row.created_at),
+    playlist: row.playlist?.trim() || 'BGM',
     tags: parseTags(row.tags),
     playable: row.playable,
     order: row.sort_order,
@@ -126,7 +129,12 @@ export async function ensureTracksSchema(): Promise<void> {
         inserted_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       )
-    `.then(() => undefined);
+    `
+      .then(() => sql`
+        ALTER TABLE tracks
+        ADD COLUMN IF NOT EXISTS playlist text NOT NULL DEFAULT 'BGM'
+      `)
+      .then(() => undefined);
   }
   await schemaReady;
 }
@@ -147,6 +155,7 @@ export async function addTrack(input: {
   title: string;
   artist: string;
   description: string;
+  playlist: string;
   tags: string[];
   audio: UploadedBlobRef;
   cover?: UploadedBlobRef;
@@ -160,6 +169,7 @@ export async function addTrack(input: {
       artist,
       description,
       created_at,
+      playlist,
       tags,
       playable,
       sort_order,
@@ -178,6 +188,7 @@ export async function addTrack(input: {
       ${input.artist},
       ${input.description},
       CURRENT_DATE,
+      ${input.playlist || 'BGM'},
       ${JSON.stringify(input.tags)}::jsonb,
       true,
       (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM tracks),
@@ -194,6 +205,27 @@ export async function addTrack(input: {
   `) as TrackRecord[];
   const row = rows[0];
   if (!row) throw new Error('Failed to add track');
+  return mapTrack(row);
+}
+
+export async function updateTrackPlaylistById(id: string, playlist: string): Promise<TrackRow> {
+  await ensureTracksSchema();
+  const normalizedPlaylist = playlist.trim() || 'BGM';
+  const sql = getSql();
+  const rows = (await sql`
+    UPDATE tracks
+    SET
+      playlist = ${normalizedPlaylist},
+      updated_at = now()
+    WHERE id = ${id}
+    RETURNING *
+  `) as TrackRecord[];
+  const row = rows[0];
+  if (!row) {
+    const err = new Error('Track not found') as Error & { code?: string };
+    err.code = 'TRACK_NOT_FOUND';
+    throw err;
+  }
   return mapTrack(row);
 }
 

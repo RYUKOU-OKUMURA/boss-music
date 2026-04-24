@@ -19,6 +19,7 @@ export interface Track {
   artist: string;
   description: string;
   createdAt: string;
+  playlist: string;
   audioUrl: string;
   coverImage?: string;
   playable: boolean;
@@ -37,17 +38,19 @@ interface AudioContextType {
   tracks: Track[];
   currentTrackIndex: number;
   currentTrack: Track | null;
+  activePlaylist: string | null;
   isPlaying: boolean;
   currentTime: number;
   duration: number;
   volume: number;
-  play: (index?: number) => void;
+  play: (index?: number, playlist?: string | null) => void;
   pause: () => void;
   resume: () => void;
   next: () => void;
   prev: () => void;
   seek: (time: number) => void;
   setVolume: (volume: number) => void;
+  setActivePlaylist: (playlist: string | null) => void;
   isLoading: boolean;
   /** Web Audio の Analyser（スペクトラム可視化用）。`MediaElementSource` は audio 要素につき 1 回だけ接続 */
   audioAnalyserRef: RefObject<AnalyserNode | null>;
@@ -86,6 +89,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [tracks, setTracks] = useState<Track[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
+  const [activePlaylist, setActivePlaylistState] = useState<string | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
@@ -109,9 +113,31 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const currentTrack = tracks[currentTrackIndex] || null;
 
-  const play = useCallback((index?: number) => {
+  const setActivePlaylist = useCallback((playlist: string | null) => {
+    setActivePlaylistState(playlist?.trim() || null);
+  }, []);
+
+  const getScopedTracks = useCallback(
+    (playlist: string | null) => {
+      const normalizedPlaylist = playlist?.trim() || null;
+      if (!normalizedPlaylist) {
+        return tracks.map((track, index) => ({ track, index }));
+      }
+      return tracks
+        .map((track, index) => ({ track, index }))
+        .filter(({ track }) => track.playlist === normalizedPlaylist);
+    },
+    [tracks]
+  );
+
+  const play = useCallback((index?: number, playlist?: string | null) => {
     if (index !== undefined && index >= 0 && index < tracks.length) {
       setCurrentTrackIndex(index);
+    }
+    if (playlist !== undefined) {
+      setActivePlaylistState(playlist?.trim() || null);
+    } else if (index !== undefined) {
+      setActivePlaylistState(tracks[index]?.playlist?.trim() || null);
     }
     setIsPlaying(true);
   }, [tracks]);
@@ -126,27 +152,35 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
 
   const next = useCallback(() => {
     if (tracks.length === 0) return;
-    const fromIndex = currentTrackIndex;
-    setCurrentTrackIndex((prev) => (prev + 1) % tracks.length);
+    const scopedTracks = getScopedTracks(activePlaylist);
+    if (scopedTracks.length === 0) return;
+    const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === currentTrackIndex);
+    const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
+    const nextScoped = scopedTracks[(fromScopedIndex + 1) % scopedTracks.length];
+    if (!nextScoped) return;
+    setCurrentTrackIndex(nextScoped.index);
     setIsPlaying(true);
 
     if (location.pathname.startsWith('/track/')) {
-      const nextTrack = tracks[(fromIndex + 1) % tracks.length];
-      navigate(`/track/${nextTrack.id}`, { replace: true });
+      navigate(`/track/${nextScoped.track.id}`, { replace: true });
     }
-  }, [tracks, currentTrackIndex, location.pathname, navigate]);
+  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, location.pathname, navigate]);
 
   const prev = useCallback(() => {
     if (tracks.length === 0) return;
-    const fromIndex = currentTrackIndex;
-    setCurrentTrackIndex((prev) => (prev - 1 + tracks.length) % tracks.length);
+    const scopedTracks = getScopedTracks(activePlaylist);
+    if (scopedTracks.length === 0) return;
+    const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === currentTrackIndex);
+    const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
+    const prevScoped = scopedTracks[(fromScopedIndex - 1 + scopedTracks.length) % scopedTracks.length];
+    if (!prevScoped) return;
+    setCurrentTrackIndex(prevScoped.index);
     setIsPlaying(true);
 
     if (location.pathname.startsWith('/track/')) {
-      const prevTrack = tracks[(fromIndex - 1 + tracks.length) % tracks.length];
-      navigate(`/track/${prevTrack.id}`, { replace: true });
+      navigate(`/track/${prevScoped.track.id}`, { replace: true });
     }
-  }, [tracks, currentTrackIndex, location.pathname, navigate]);
+  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, location.pathname, navigate]);
 
   const seek = useCallback((time: number) => {
     if (audioRef.current) {
@@ -168,6 +202,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       tracks,
       currentTrackIndex,
       currentTrack,
+      activePlaylist,
       isPlaying,
       duration,
       volume,
@@ -178,6 +213,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       prev,
       seek,
       setVolume,
+      setActivePlaylist,
       isLoading,
       audioAnalyserRef,
     }),
@@ -185,6 +221,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       tracks,
       currentTrackIndex,
       currentTrack,
+      activePlaylist,
       isPlaying,
       duration,
       volume,
@@ -195,6 +232,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       prev,
       seek,
       setVolume,
+      setActivePlaylist,
       isLoading,
     ]
   );

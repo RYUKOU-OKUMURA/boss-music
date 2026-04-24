@@ -1,11 +1,11 @@
 import React from 'react';
 import { useAudio } from '../context/AudioContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2 } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2, Repeat2 } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 export const GlobalPlayer: React.FC = () => {
-  const { currentTrack, isPlaying, play, pause, next, prev, currentTime, duration, volume, setVolume, seek } = useAudio();
+  const { currentTrack, activePlaylist, isPlaying, play, pause, next, prev, currentTime, duration, volume, setVolume, seek } = useAudio();
   const location = useLocation();
 
   // Hide global player on track page since it has its own controls
@@ -39,6 +39,10 @@ export const GlobalPlayer: React.FC = () => {
             {currentTrack.title}
           </Link>
           <p className="text-xs text-zen-mist/60">{currentTrack.artist}</p>
+          <p className="text-[10px] text-neon-cyan/70 mt-1 flex items-center gap-1">
+            <Repeat2 className="w-3 h-3" />
+            {activePlaylist ?? 'すべて'} をリピート
+          </p>
         </div>
       </div>
 

@@ -4,6 +4,7 @@ CREATE TABLE IF NOT EXISTS tracks (
   artist text NOT NULL,
   description text,
   created_at date NOT NULL DEFAULT CURRENT_DATE,
+  playlist text NOT NULL DEFAULT 'BGM',
   tags jsonb NOT NULL DEFAULT '[]'::jsonb,
   playable boolean NOT NULL DEFAULT true,
   sort_order integer NOT NULL DEFAULT 0,

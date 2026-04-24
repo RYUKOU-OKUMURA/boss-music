@@ -45,6 +45,7 @@ function mapTrack(row) {
     artist: row.artist,
     description: row.description ?? "",
     createdAt: dateOnly(row.created_at),
+    playlist: row.playlist?.trim() || "BGM",
     tags: parseTags(row.tags),
     playable: row.playable,
     order: row.sort_order,
@@ -82,7 +83,10 @@ async function ensureTracksSchema() {
         inserted_at timestamptz NOT NULL DEFAULT now(),
         updated_at timestamptz NOT NULL DEFAULT now()
       )
-    `.then(() => void 0);
+    `.then(() => sql`
+        ALTER TABLE tracks
+        ADD COLUMN IF NOT EXISTS playlist text NOT NULL DEFAULT 'BGM'
+      `).then(() => void 0);
   }
   await schemaReady;
 }
@@ -106,6 +110,7 @@ async function addTrack(input) {
       artist,
       description,
       created_at,
+      playlist,
       tags,
       playable,
       sort_order,
@@ -124,6 +129,7 @@ async function addTrack(input) {
       ${input.artist},
       ${input.description},
       CURRENT_DATE,
+      ${input.playlist || "BGM"},
       ${JSON.stringify(input.tags)}::jsonb,
       true,
       (SELECT COALESCE(MAX(sort_order) + 1, 0) FROM tracks),
@@ -140,6 +146,26 @@ async function addTrack(input) {
   `;
   const row = rows[0];
   if (!row) throw new Error("Failed to add track");
+  return mapTrack(row);
+}
+async function updateTrackPlaylistById(id, playlist) {
+  await ensureTracksSchema();
+  const normalizedPlaylist = playlist.trim() || "BGM";
+  const sql = getSql();
+  const rows = await sql`
+    UPDATE tracks
+    SET
+      playlist = ${normalizedPlaylist},
+      updated_at = now()
+    WHERE id = ${id}
+    RETURNING *
+  `;
+  const row = rows[0];
+  if (!row) {
+    const err = new Error("Track not found");
+    err.code = "TRACK_NOT_FOUND";
+    throw err;
+  }
   return mapTrack(row);
 }
 async function findTrackById(id) {
@@ -212,6 +238,7 @@ function toPublicTrack(t) {
     artist: t.artist,
     description: t.description,
     createdAt: t.createdAt,
+    playlist: t.playlist,
     tags: t.tags,
     playable: t.playable,
     order: t.order,
@@ -542,6 +569,7 @@ adminRouter.post(
     const title = String(body.title ?? "").trim();
     const artist = String(body.artist ?? "").trim();
     const description = String(body.description ?? "").trim();
+    const playlist = String(body.playlist ?? "BGM").trim() || "BGM";
     const tags = splitTags(body.tags);
     if (!trackId || !isUuidLike(trackId)) {
       res.status(400).json({ error: "valid trackId is required" });
@@ -569,6 +597,7 @@ adminRouter.post(
         title,
         artist,
         description,
+        playlist,
         tags,
         audio,
         ...cover ? { cover } : {}
@@ -580,6 +609,33 @@ adminRouter.post(
       const err = error;
       if (isValidationError(error) && err.code === "UPLOAD_VALIDATION_FAILED") {
         res.status(400).json({ error: err.message });
+        return;
+      }
+      throw error;
+    }
+  })
+);
+adminRouter.post(
+  "/admin/tracks/:id/playlist",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const id = String(req.params.id ?? "").trim();
+    const body = req.body ?? {};
+    const playlist = String(body.playlist ?? "").trim();
+    if (!id) {
+      res.status(400).json({ error: "id is required" });
+      return;
+    }
+    if (!playlist) {
+      res.status(400).json({ error: "playlist is required" });
+      return;
+    }
+    try {
+      const track = await updateTrackPlaylistById(id, playlist);
+      res.json({ track: toPublicTrack(track) });
+    } catch (error) {
+      if (isTrackNotFound(error)) {
+        res.status(404).json({ error: "Track not found" });
         return;
       }
       throw error;

@@ -7,6 +7,7 @@ export function toPublicTrack(t: TrackRow) {
     artist: t.artist,
     description: t.description,
     createdAt: t.createdAt,
+    playlist: t.playlist,
     tags: t.tags,
     playable: t.playable,
     order: t.order,

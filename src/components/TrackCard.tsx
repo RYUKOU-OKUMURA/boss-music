@@ -5,7 +5,11 @@ import { Play, Pause } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import clsx from 'clsx';
 
-export const TrackCard: React.FC<{ track: Track; index: number }> = ({ track, index }) => {
+export const TrackCard: React.FC<{ track: Track; index: number; playbackPlaylist?: string | null }> = ({
+  track,
+  index,
+  playbackPlaylist,
+}) => {
   const { currentTrack, isPlaying, play, pause } = useAudioMain();
   const isCurrent = currentTrack?.id === track.id;
   const coverImage = resolveCoverImageUrl(track);
@@ -30,7 +34,7 @@ export const TrackCard: React.FC<{ track: Track; index: number }> = ({ track, in
           <button
             onClick={(e) => {
               e.preventDefault();
-              isCurrent && isPlaying ? pause() : play(index);
+              isCurrent && isPlaying ? pause() : play(index, playbackPlaylist === undefined ? track.playlist : playbackPlaylist);
             }}
             className="w-14 h-14 rounded-full bg-neon-cyan text-black flex items-center justify-center transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-[0_0_20px_rgba(143,245,255,0.5)]"
           >
@@ -60,6 +64,7 @@ export const TrackCard: React.FC<{ track: Track; index: number }> = ({ track, in
             {track.title}
           </Link>
           <p className="text-sm text-zen-mist/60 mt-1 line-clamp-1">{track.artist}</p>
+          <p className="text-xs text-neon-cyan/70 mt-3 line-clamp-1">{track.playlist}</p>
         </div>
       </div>
     </div>

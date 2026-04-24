@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Track } from '../context/AudioContext';
 import {
   createAuthHeaders,
@@ -14,10 +14,13 @@ import { formatBytes } from '../admin/formatBytes';
 import type { StorageStatusResponse, UploadedBlobInfo } from '../admin/types';
 import { parseMp3Metadata } from '../admin/parseMp3Id3';
 
+const PLAYLIST_PRESETS = ['BGM', 'お気に入り'];
+
 export const Admin: React.FC = () => {
   const [title, setTitle] = useState('');
   const [artist, setArtist] = useState('');
   const [description, setDescription] = useState('');
+  const [playlist, setPlaylist] = useState('BGM');
   const [tags, setTags] = useState('');
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
@@ -36,6 +39,16 @@ export const Admin: React.FC = () => {
   const coverChosenManuallyRef = useRef(false);
   const id3ParseGenRef = useRef(0);
   const viteSecret = import.meta.env.VITE_ADMIN_SECRET as string | undefined;
+
+  const playlistOptions = useMemo(() => {
+    const seen = new Set<string>();
+    return [...PLAYLIST_PRESETS, ...(catalogTracks ?? []).map((track) => track.playlist || 'BGM')].filter((item) => {
+      const normalized = item.trim() || 'BGM';
+      if (seen.has(normalized)) return false;
+      seen.add(normalized);
+      return true;
+    });
+  }, [catalogTracks]);
 
   const authHeaders = useCallback(
     () => createAuthHeaders(viteSecret?.trim() || adminSecret.trim() || undefined),
@@ -200,6 +213,29 @@ export const Admin: React.FC = () => {
     }
   };
 
+  const handlePlaylistChange = async (trackId: string, nextPlaylist: string) => {
+    const normalizedPlaylist = nextPlaylist.trim() || 'BGM';
+    const headers = authHeaders();
+    setRowBusyId(trackId);
+    setMessage('');
+    try {
+      await postJson<{ track: Track }>(
+        `/api/admin/tracks/${encodeURIComponent(trackId)}/playlist`,
+        { playlist: normalizedPlaylist },
+        headers
+      );
+      setMessage('プレイリストを更新しました。');
+      window.dispatchEvent(new Event('boss-music-catalog-changed'));
+      await refreshTracks();
+    } catch (error: unknown) {
+      console.error('Playlist update failed', error);
+      const raw = error instanceof Error ? error.message : '不明なエラー';
+      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+    } finally {
+      setRowBusyId(null);
+    }
+  };
+
   const handleDeleteTrack = async (trackId: string, trackTitle: string) => {
     if (!window.confirm(`「${trackTitle}」をカタログから削除し、Blob 上の音声ファイルとジャケット画像も削除しますか？`)) {
       return;
@@ -273,6 +309,7 @@ export const Admin: React.FC = () => {
           title,
           artist,
           description,
+          playlist,
           tags,
           audio,
           cover,
@@ -284,6 +321,7 @@ export const Admin: React.FC = () => {
       setTitle('');
       setArtist('');
       setDescription('');
+      setPlaylist('BGM');
       setTags('');
       setAudioFile(null);
       setImageFile(null);
@@ -407,6 +445,24 @@ export const Admin: React.FC = () => {
           </div>
 
           <div>
+            <label className="block text-sm mb-2 opacity-70">プレイリスト</label>
+            <input
+              type="text"
+              value={playlist}
+              list="playlist-presets"
+              onChange={(e) => setPlaylist(e.target.value)}
+              placeholder="例: BGM, お気に入り"
+              className="w-full bg-black/50 border border-white/10 rounded p-3 text-white"
+              disabled={isUploading}
+            />
+            <datalist id="playlist-presets">
+              {playlistOptions.map((option) => (
+                <option key={option} value={option} />
+              ))}
+            </datalist>
+          </div>
+
+          <div>
             <label className="block text-sm mb-2 opacity-70">タグ (カンマ区切り)</label>
             <input
               type="text"
@@ -496,10 +552,27 @@ export const Admin: React.FC = () => {
                   <div className="min-w-0">
                     <p className="font-bold text-white truncate">{track.title}</p>
                     <p className="text-sm text-white/50 truncate">{track.artist}</p>
+                    <p className="text-xs text-neon-cyan/70 mt-1 truncate">{track.playlist || 'BGM'}</p>
                   </div>
                 </div>
 
                 <div className="flex flex-wrap gap-2 shrink-0">
+                  <select
+                    value={track.playlist || 'BGM'}
+                    disabled={rowSectionDisabled || !configOk}
+                    onChange={(ev) => void handlePlaylistChange(track.id, ev.target.value)}
+                    className="text-xs font-bold px-3 py-2 rounded-full border border-white/20 bg-white/10 hover:bg-white/20 disabled:opacity-40"
+                  >
+                    {playlistOptions.includes(track.playlist || 'BGM') ? null : (
+                      <option value={track.playlist || 'BGM'}>{track.playlist || 'BGM'}</option>
+                    )}
+                    {playlistOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+
                   <label className="cursor-pointer">
                     <input
                       type="file"

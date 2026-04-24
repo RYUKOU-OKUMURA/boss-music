@@ -32,6 +32,7 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   const {
     tracks,
     currentTrackIndex,
+    activePlaylist,
     isPlaying,
     play,
     pause,
@@ -57,12 +58,21 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   const goAdjacentTrack = useCallback(
     (delta: -1 | 1) => {
       if (tracks.length <= 1 || trackIndex < 0) return;
-      const nextIndex = (trackIndex + delta + tracks.length) % tracks.length;
-      const next = tracks[nextIndex];
+      const scopedPlaylist = activePlaylist ?? (currentTrackIndex === trackIndex ? null : track?.playlist ?? null);
+      const scopedTracks = scopedPlaylist
+        ? tracks.map((t, index) => ({ track: t, index })).filter(({ track: t }) => t.playlist === scopedPlaylist)
+        : tracks.map((t, index) => ({ track: t, index }));
+      if (scopedTracks.length <= 1) return;
+      const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === trackIndex);
+      const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
+      const nextScoped = scopedTracks[(fromScopedIndex + delta + scopedTracks.length) % scopedTracks.length];
+      if (!nextScoped) return;
+      const nextIndex = nextScoped.index;
+      const next = nextScoped.track;
       navigate(`/track/${next.id}`, { replace: true });
-      play(nextIndex);
+      play(nextIndex, scopedPlaylist);
     },
-    [tracks, trackIndex, navigate, play]
+    [tracks, trackIndex, activePlaylist, currentTrackIndex, track?.playlist, navigate, play]
   );
 
   useEffect(() => {
@@ -109,16 +119,20 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   }, [track?.title]);
 
   const isCurrent = currentTrackIndex === trackIndex;
-  const canChangeTrack = tracks.length > 1;
+  const scopedPlaylistForControls = activePlaylist ?? (currentTrackIndex === trackIndex ? null : track?.playlist ?? null);
+  const scopedTrackCount = scopedPlaylistForControls
+    ? tracks.filter((t) => t.playlist === scopedPlaylistForControls).length
+    : tracks.length;
+  const canChangeTrack = scopedTrackCount > 1;
 
   const onPlayPause = useCallback(() => {
     if (!track) return;
     if (isCurrent && isPlaying) {
       pause();
     } else {
-      play(trackIndex);
+      play(trackIndex, activePlaylist);
     }
-  }, [track, isCurrent, isPlaying, pause, play, trackIndex]);
+  }, [track, isCurrent, isPlaying, pause, play, trackIndex, activePlaylist]);
 
   const onVolumeBarClick = useCallback(
     (e: React.MouseEvent<HTMLDivElement>) => {

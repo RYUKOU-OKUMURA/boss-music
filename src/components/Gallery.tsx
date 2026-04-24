@@ -14,14 +14,27 @@ function trackMatchesQuery(
 
 export const Gallery: React.FC = () => {
   const { tracks, play, isLoading } = useAudioMain();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const queryRaw = searchParams.get('q')?.trim() ?? '';
   const queryLower = queryRaw.toLowerCase();
+  const selectedPlaylist = searchParams.get('playlist')?.trim() || null;
+
+  const playlists = useMemo(() => {
+    const seen = new Set<string>();
+    return tracks
+      .map((track) => track.playlist?.trim() || 'BGM')
+      .filter((playlist) => {
+        if (seen.has(playlist)) return false;
+        seen.add(playlist);
+        return true;
+      });
+  }, [tracks]);
 
   const filteredTracks = useMemo(() => {
-    if (!queryRaw) return tracks;
-    return tracks.filter((t) => trackMatchesQuery(t, queryLower));
-  }, [tracks, queryRaw, queryLower]);
+    const playlistTracks = selectedPlaylist ? tracks.filter((t) => t.playlist === selectedPlaylist) : tracks;
+    if (!queryRaw) return playlistTracks;
+    return playlistTracks.filter((t) => trackMatchesQuery(t, queryLower));
+  }, [tracks, selectedPlaylist, queryRaw, queryLower]);
 
   const shuffleStartIndex = useMemo(() => {
     if (filteredTracks.length === 0) return 0;
@@ -29,14 +42,20 @@ export const Gallery: React.FC = () => {
     return i >= 0 ? i : 0;
   }, [filteredTracks, tracks]);
 
-  const tags = [
-    { name: 'トレンド', active: true },
-    { name: 'Synthwave', active: false },
-    { name: 'Dark Techno', active: false },
-    { name: 'Acid House', active: false },
-    { name: 'Future Core', active: false },
-    { name: 'サイバーパンク', active: false },
-  ];
+  const selectPlaylist = (playlist: string | null) => {
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        if (playlist) {
+          next.set('playlist', playlist);
+        } else {
+          next.delete('playlist');
+        }
+        return next;
+      },
+      { replace: true }
+    );
+  };
 
   if (isLoading) {
     return (
@@ -61,26 +80,38 @@ export const Gallery: React.FC = () => {
           </p>
         </div>
         <button
-          onClick={() => play(shuffleStartIndex)}
+          onClick={() => play(shuffleStartIndex, selectedPlaylist)}
+          disabled={filteredTracks.length === 0}
           className="flex items-center gap-3 bg-neon-cyan text-black px-8 py-4 rounded-full font-bold text-sm tracking-wider hover:scale-105 transition-transform shadow-[0_0_30px_rgba(143,245,255,0.3)]"
         >
           <Play className="w-5 h-5" fill="currentColor" />
-          シャッフル再生
+          {selectedPlaylist ? `${selectedPlaylist} を再生` : 'ライブラリを再生'}
         </button>
       </div>
 
-      {/* Tags */}
+      {/* Playlists */}
       <div className="flex flex-wrap gap-3 mb-12">
-        {tags.map((tag) => (
+        <button
+          onClick={() => selectPlaylist(null)}
+          className={`px-6 py-2 rounded-full text-sm font-medium transition-all duration-300 ${
+            selectedPlaylist === null
+              ? 'bg-neon-purple text-white shadow-[0_0_15px_rgba(214,116,255,0.4)]'
+              : 'bg-surface border border-white/5 text-zen-mist/70 hover:bg-white/10 hover:text-white'
+          }`}
+        >
+          すべて
+        </button>
+        {playlists.map((playlist) => (
           <button
-            key={tag.name}
+            key={playlist}
+            onClick={() => selectPlaylist(playlist)}
             className={`px-6 py-2 rounded-full text-sm font-medium transition-all duration-300 ${
-              tag.active
+              selectedPlaylist === playlist
                 ? 'bg-neon-purple text-white shadow-[0_0_15px_rgba(214,116,255,0.4)]'
                 : 'bg-surface border border-white/5 text-zen-mist/70 hover:bg-white/10 hover:text-white'
             }`}
           >
-            {tag.name}
+            {playlist}
           </button>
         ))}
       </div>
@@ -100,7 +131,7 @@ export const Gallery: React.FC = () => {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-6 md:gap-8">
           {filteredTracks.map((track) => {
             const index = tracks.findIndex((t) => t.id === track.id);
-            return <TrackCard key={track.id} track={track} index={index} />;
+            return <TrackCard key={track.id} track={track} index={index} playbackPlaylist={selectedPlaylist} />;
           })}
         </div>
       )}
