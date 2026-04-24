@@ -33,6 +33,47 @@ export function makeBlobPath(trackId: string, kind: UploadKind, file: File): str
   return `tracks/${trackId}/${prefix}-${randomPart()}.${extensionFor(file, kind)}`;
 }
 
+function parseResponseError(text: string): string {
+  try {
+    const parsed = JSON.parse(text) as { error?: string };
+    if (parsed?.error) return parsed.error;
+  } catch {
+    // Keep the raw response text below.
+  }
+  return text.trim();
+}
+
+async function explainClientTokenFailure(
+  pathname: string,
+  kind: UploadKind,
+  multipart: boolean,
+  headers: Record<string, string>
+): Promise<string> {
+  try {
+    const res = await fetch('/api/admin/blob-upload', {
+      method: 'POST',
+      credentials: 'include',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify({
+        type: 'blob.generate-client-token',
+        payload: {
+          pathname,
+          clientPayload: JSON.stringify({ kind }),
+          multipart,
+        },
+      }),
+    });
+    const text = await res.text();
+    if (!res.ok) return parseResponseError(text) || res.statusText;
+    return 'Vercel Blob のアップロードトークン取得後、SDK がレスポンスを処理できませんでした。';
+  } catch (error) {
+    return error instanceof Error ? error.message : 'アップロードトークン取得に失敗しました。';
+  }
+}
+
 export async function uploadFileToBlob(
   trackId: string,
   kind: UploadKind,
@@ -40,23 +81,35 @@ export async function uploadFileToBlob(
   headers: Record<string, string>,
   onProgress?: (percentage: number) => void
 ): Promise<UploadedBlobInfo> {
-  const result = await upload(makeBlobPath(trackId, kind, file), file, {
-    access: 'public',
-    handleUploadUrl: '/api/admin/blob-upload',
-    headers,
-    contentType: normalizeMimeType(file, kind),
-    multipart: file.size > 20 * 1024 * 1024,
-    clientPayload: JSON.stringify({ kind }),
-    onUploadProgress: (event) => {
-      onProgress?.(event.percentage);
-    },
-  });
+  const pathname = makeBlobPath(trackId, kind, file);
+  const contentType = normalizeMimeType(file, kind);
+  const multipart = file.size > 20 * 1024 * 1024;
+  let result;
+  try {
+    result = await upload(pathname, file, {
+      access: 'public',
+      handleUploadUrl: '/api/admin/blob-upload',
+      headers,
+      contentType,
+      multipart,
+      clientPayload: JSON.stringify({ kind }),
+      onUploadProgress: (event) => {
+        onProgress?.(event.percentage);
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'アップロードに失敗しました。';
+    if (message.toLowerCase().includes('retrieve the client token')) {
+      throw new Error(await explainClientTokenFailure(pathname, kind, multipart, headers));
+    }
+    throw error;
+  }
 
   return {
     url: result.url,
     pathname: result.pathname,
     size: file.size,
-    contentType: normalizeMimeType(file, kind),
+    contentType,
   };
 }
 

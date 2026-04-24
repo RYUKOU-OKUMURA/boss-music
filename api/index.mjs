@@ -245,6 +245,7 @@ tracksRouter.get(
 
 // server/routes/admin.ts
 import { Router as Router2 } from "express";
+import { list } from "@vercel/blob";
 import { handleUpload } from "@vercel/blob/client";
 
 // server/services/blobUploads.ts
@@ -444,30 +445,52 @@ function ensureExpectedPath(kind, pathname) {
     throw err;
   }
 }
-function getStorageStatus() {
+function safeStatusMessage(error) {
+  const message = error instanceof Error ? error.message : "Unknown error";
+  return message.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer [redacted]");
+}
+async function getStorageStatus() {
   const missing = [];
   if (!process.env.DATABASE_URL?.trim()) missing.push("DATABASE_URL");
   if (!process.env.BLOB_READ_WRITE_TOKEN?.trim()) missing.push("BLOB_READ_WRITE_TOKEN");
-  return {
-    configOk: missing.length === 0,
+  const base = {
     storage: "vercel-blob+neon",
-    missing,
-    reason: missing.length ? `${missing.join(", ")} is required` : void 0
+    missing
+  };
+  if (missing.length) {
+    return {
+      ...base,
+      configOk: false,
+      reason: `${missing.join(", ")} is required`
+    };
+  }
+  try {
+    await list({ limit: 1 });
+  } catch (error) {
+    return {
+      ...base,
+      configOk: false,
+      reason: `Vercel Blob check failed: ${safeStatusMessage(error)}`
+    };
+  }
+  try {
+    await ensureTracksSchema();
+  } catch (error) {
+    return {
+      ...base,
+      configOk: false,
+      reason: `Neon DB check failed: ${safeStatusMessage(error)}`
+    };
+  }
+  return {
+    ...base,
+    configOk: true
   };
 }
 adminRouter.get(
   "/admin/storage-status",
   asyncHandler(async (_req, res) => {
-    const status = getStorageStatus();
-    if (status.configOk) {
-      try {
-        await ensureTracksSchema();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "Database connection failed";
-        res.json({ ...status, configOk: false, reason: message });
-        return;
-      }
-    }
+    const status = await getStorageStatus();
     res.json(status);
   })
 );

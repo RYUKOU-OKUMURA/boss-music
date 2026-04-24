@@ -341,7 +341,7 @@ export const Admin: React.FC = () => {
                 storage: <span className="font-mono">{storageStatus.storage}</span>
               </span>
             )}
-            {storageStatus?.configOk === true && <span className="text-xs text-neon-green">設定済み</span>}
+            {storageStatus?.configOk === true && <span className="text-xs text-neon-green">接続確認済み</span>}
             {storageStatus?.configOk === false && (
               <span className="text-xs text-amber-400">{storageStatus.reason ?? '本番設定が不足しています。'}</span>
             )}
