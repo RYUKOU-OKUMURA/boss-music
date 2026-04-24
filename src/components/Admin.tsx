@@ -15,6 +15,30 @@ import type { StorageStatusResponse, UploadedBlobInfo } from '../admin/types';
 import { parseMp3Metadata } from '../admin/parseMp3Id3';
 
 const PLAYLIST_PRESETS = ['BGM', 'お気に入り'];
+const ADMIN_SECRET_STORAGE_KEY = 'boss-music:admin-secret';
+
+function readSavedAdminSecret(): string {
+  if (typeof window === 'undefined') return '';
+  try {
+    return window.localStorage.getItem(ADMIN_SECRET_STORAGE_KEY) ?? '';
+  } catch {
+    return '';
+  }
+}
+
+function saveAdminSecret(secret: string): void {
+  if (typeof window === 'undefined') return;
+  try {
+    const trimmed = secret.trim();
+    if (trimmed) {
+      window.localStorage.setItem(ADMIN_SECRET_STORAGE_KEY, trimmed);
+    } else {
+      window.localStorage.removeItem(ADMIN_SECRET_STORAGE_KEY);
+    }
+  } catch {
+    // Storage may be unavailable in private browsing or restricted contexts.
+  }
+}
 
 export const Admin: React.FC = () => {
   const [title, setTitle] = useState('');
@@ -24,7 +48,7 @@ export const Admin: React.FC = () => {
   const [tags, setTags] = useState('');
   const [audioFile, setAudioFile] = useState<File | null>(null);
   const [imageFile, setImageFile] = useState<File | null>(null);
-  const [adminSecret, setAdminSecret] = useState('');
+  const [adminSecret, setAdminSecret] = useState(readSavedAdminSecret);
   const [id3Loading, setId3Loading] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
@@ -54,6 +78,17 @@ export const Admin: React.FC = () => {
     () => createAuthHeaders(viteSecret?.trim() || adminSecret.trim() || undefined),
     [viteSecret, adminSecret]
   );
+
+  const handleAdminSecretChange = (nextSecret: string) => {
+    setAdminSecret(nextSecret);
+    saveAdminSecret(nextSecret);
+  };
+
+  const clearSavedAdminSecret = () => {
+    setAdminSecret('');
+    saveAdminSecret('');
+    setMessage('この端末に保存した管理者シークレットを削除しました。');
+  };
 
   const refreshTracks = useCallback(async () => {
     setTracksLoading(true);
@@ -391,14 +426,21 @@ export const Admin: React.FC = () => {
           <input
             type="password"
             value={adminSecret}
-            onChange={(e) => setAdminSecret(e.target.value)}
-            placeholder={viteSecret ? 'VITE_ADMIN_SECRET が設定済み' : 'Cookie が無い場合に必要'}
+            onChange={(e) => handleAdminSecretChange(e.target.value)}
+            placeholder={viteSecret ? 'VITE_ADMIN_SECRET が設定済み' : '一度入力するとこの端末に保存されます'}
             className="w-full bg-black/50 border border-white/10 rounded p-2 text-white text-sm"
             autoComplete="off"
           />
-          <p className="text-[10px] text-white/35 mt-1">
-            ローカルでは .env に ADMIN_SECRET と VITE_ADMIN_SECRET を同じ値で入れると入力不要です。
-          </p>
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-[10px] text-white/35">
+              入力した値はこのブラウザの localStorage に保存され、次回から自動入力されます。
+            </p>
+            {adminSecret.trim() && !viteSecret ? (
+              <button type="button" onClick={clearSavedAdminSecret} className="text-[10px] text-white/45 hover:text-white">
+                保存を削除
+              </button>
+            ) : null}
+          </div>
         </div>
 
         {message && (
