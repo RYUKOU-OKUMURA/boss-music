@@ -18,11 +18,13 @@ export interface UseTrackPagePlaybackResult {
   isPlaying: boolean;
   canChangeTrack: boolean;
   volume: number;
+  isRepeatEnabled: boolean;
   shareFeedback: 'idle' | 'copied';
   goToLibrary: () => void;
   goAdjacentTrack: (delta: -1 | 1) => void;
   handleShare: () => Promise<void>;
   onPlayPause: () => void;
+  toggleRepeatEnabled: () => void;
   onVolumeBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
 }
 
@@ -39,6 +41,8 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     isLoading,
     volume,
     setVolume,
+    isRepeatEnabled,
+    toggleRepeatEnabled,
   } = useAudioMain();
   const [shareFeedback, setShareFeedback] = useState<'idle' | 'copied'>('idle');
 
@@ -151,11 +155,13 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     isPlaying,
     canChangeTrack,
     volume,
+    isRepeatEnabled,
     shareFeedback,
     goToLibrary,
     goAdjacentTrack,
     handleShare,
     onPlayPause,
+    toggleRepeatEnabled,
     onVolumeBarClick,
   };
 }

@@ -39,6 +39,7 @@ interface AudioContextType {
   currentTrackIndex: number;
   currentTrack: Track | null;
   activePlaylist: string | null;
+  isRepeatEnabled: boolean;
   isPlaying: boolean;
   currentTime: number;
   duration: number;
@@ -51,6 +52,8 @@ interface AudioContextType {
   seek: (time: number) => void;
   setVolume: (volume: number) => void;
   setActivePlaylist: (playlist: string | null) => void;
+  setRepeatEnabled: (enabled: boolean) => void;
+  toggleRepeatEnabled: () => void;
   isLoading: boolean;
   /** Web Audio の Analyser（スペクトラム可視化用）。`MediaElementSource` は audio 要素につき 1 回だけ接続 */
   audioAnalyserRef: RefObject<AnalyserNode | null>;
@@ -90,6 +93,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [isLoading, setIsLoading] = useState(true);
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
   const [activePlaylist, setActivePlaylistState] = useState<string | null>(null);
+  const [isRepeatEnabled, setRepeatEnabled] = useState<boolean>(true);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
@@ -150,6 +154,10 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setIsPlaying(true);
   }, []);
 
+  const toggleRepeatEnabled = useCallback(() => {
+    setRepeatEnabled((enabled) => !enabled);
+  }, []);
+
   const next = useCallback(() => {
     if (tracks.length === 0) return;
     const scopedTracks = getScopedTracks(activePlaylist);
@@ -165,6 +173,29 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       navigate(`/track/${nextScoped.track.id}`, { replace: true });
     }
   }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, location.pathname, navigate]);
+
+  const handleTrackEnded = useCallback(() => {
+    if (tracks.length === 0) return;
+    const scopedTracks = getScopedTracks(activePlaylist);
+    if (scopedTracks.length === 0) return;
+    const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === currentTrackIndex);
+    const isLastScopedTrack = currentScopedIndex === scopedTracks.length - 1;
+
+    if (!isRepeatEnabled && isLastScopedTrack) {
+      setIsPlaying(false);
+      return;
+    }
+
+    const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
+    const nextScoped = scopedTracks[(fromScopedIndex + 1) % scopedTracks.length];
+    if (!nextScoped) return;
+    setCurrentTrackIndex(nextScoped.index);
+    setIsPlaying(true);
+
+    if (location.pathname.startsWith('/track/')) {
+      navigate(`/track/${nextScoped.track.id}`, { replace: true });
+    }
+  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, isRepeatEnabled, location.pathname, navigate]);
 
   const prev = useCallback(() => {
     if (tracks.length === 0) return;
@@ -203,6 +234,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       currentTrackIndex,
       currentTrack,
       activePlaylist,
+      isRepeatEnabled,
       isPlaying,
       duration,
       volume,
@@ -214,6 +246,8 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       seek,
       setVolume,
       setActivePlaylist,
+      setRepeatEnabled,
+      toggleRepeatEnabled,
       isLoading,
       audioAnalyserRef,
     }),
@@ -222,6 +256,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       currentTrackIndex,
       currentTrack,
       activePlaylist,
+      isRepeatEnabled,
       isPlaying,
       duration,
       volume,
@@ -233,6 +268,8 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       seek,
       setVolume,
       setActivePlaylist,
+      setRepeatEnabled,
+      toggleRepeatEnabled,
       isLoading,
     ]
   );
@@ -291,7 +328,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setCurrentTime(t);
     };
     const handleLoadedMetadata = () => setDuration(audio.duration);
-    const handleEnded = () => next();
+    const handleEnded = () => handleTrackEnded();
     const handlePlay = () => setIsPlaying(true);
     const handlePause = () => setIsPlaying(false);
 
@@ -308,7 +345,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       audio.removeEventListener('play', handlePlay);
       audio.removeEventListener('pause', handlePause);
     };
-  }, [tracks.length, next]);
+  }, [tracks.length, handleTrackEnded]);
 
   /** HTMLAudioElement につき 1 回だけ: MediaElementSource → Analyser → destination */
   useEffect(() => {

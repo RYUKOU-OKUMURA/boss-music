@@ -1,8 +1,8 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAudioMain } from '../context/AudioContext';
 import { TrackCard } from './TrackCard';
-import { Play } from 'lucide-react';
+import { Folder, Music2, Play } from 'lucide-react';
 
 function trackMatchesQuery(
   track: { title: string; artist: string; description: string; tags: string[] },
@@ -13,21 +13,23 @@ function trackMatchesQuery(
 }
 
 export const Gallery: React.FC = () => {
-  const { tracks, play, isLoading } = useAudioMain();
+  const { tracks, play, setActivePlaylist, isLoading } = useAudioMain();
   const [searchParams, setSearchParams] = useSearchParams();
   const queryRaw = searchParams.get('q')?.trim() ?? '';
   const queryLower = queryRaw.toLowerCase();
   const selectedPlaylist = searchParams.get('playlist')?.trim() || null;
 
+  useEffect(() => {
+    setActivePlaylist(selectedPlaylist);
+  }, [selectedPlaylist, setActivePlaylist]);
+
   const playlists = useMemo(() => {
-    const seen = new Set<string>();
-    return tracks
-      .map((track) => track.playlist?.trim() || 'BGM')
-      .filter((playlist) => {
-        if (seen.has(playlist)) return false;
-        seen.add(playlist);
-        return true;
-      });
+    const counts = new Map<string, number>();
+    tracks.forEach((track) => {
+      const playlist = track.playlist?.trim() || 'BGM';
+      counts.set(playlist, (counts.get(playlist) ?? 0) + 1);
+    });
+    return Array.from(counts.entries()).map(([name, count]) => ({ name, count }));
   }, [tracks]);
 
   const filteredTracks = useMemo(() => {
@@ -43,6 +45,7 @@ export const Gallery: React.FC = () => {
   }, [filteredTracks, tracks]);
 
   const selectPlaylist = (playlist: string | null) => {
+    setActivePlaylist(playlist);
     setSearchParams(
       (prev) => {
         const next = new URLSearchParams(prev);
@@ -89,31 +92,73 @@ export const Gallery: React.FC = () => {
         </button>
       </div>
 
-      {/* Playlists */}
-      <div className="flex flex-wrap gap-3 mb-12">
-        <button
-          onClick={() => selectPlaylist(null)}
-          className={`px-6 py-2 rounded-full text-sm font-medium transition-all duration-300 ${
-            selectedPlaylist === null
-              ? 'bg-neon-purple text-white shadow-[0_0_15px_rgba(214,116,255,0.4)]'
-              : 'bg-surface border border-white/5 text-zen-mist/70 hover:bg-white/10 hover:text-white'
-          }`}
-        >
-          すべて
-        </button>
-        {playlists.map((playlist) => (
+      {/* Playlist folders */}
+      <div className="mb-12">
+        <div className="mb-4 flex items-center justify-between gap-4">
+          <h2 className="text-sm font-bold uppercase tracking-[0.18em] text-white/55">プレイリストフォルダ</h2>
+          {selectedPlaylist ? (
+            <button
+              type="button"
+              onClick={() => selectPlaylist(null)}
+              className="text-xs font-medium text-neon-cyan hover:text-neon-cyan/80"
+            >
+              すべて表示
+            </button>
+          ) : null}
+        </div>
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-5">
           <button
-            key={playlist}
-            onClick={() => selectPlaylist(playlist)}
-            className={`px-6 py-2 rounded-full text-sm font-medium transition-all duration-300 ${
-              selectedPlaylist === playlist
-                ? 'bg-neon-purple text-white shadow-[0_0_15px_rgba(214,116,255,0.4)]'
-                : 'bg-surface border border-white/5 text-zen-mist/70 hover:bg-white/10 hover:text-white'
+            type="button"
+            onClick={() => selectPlaylist(null)}
+            className={`group flex min-h-24 flex-col justify-between rounded-lg border p-4 text-left transition-all ${
+              selectedPlaylist === null
+                ? 'border-neon-cyan/60 bg-neon-cyan/10 shadow-[0_0_22px_rgba(143,245,255,0.15)]'
+                : 'border-white/10 bg-surface hover:border-white/25 hover:bg-white/10'
             }`}
           >
-            {playlist}
+            <Folder
+              className={`h-7 w-7 ${selectedPlaylist === null ? 'text-neon-cyan' : 'text-zen-mist/55 group-hover:text-white/80'}`}
+              fill="currentColor"
+              fillOpacity={0.18}
+            />
+            <span>
+              <span className="block truncate text-sm font-bold text-white">すべて</span>
+              <span className="mt-1 flex items-center gap-1 text-xs text-zen-mist/50">
+                <Music2 className="h-3 w-3" />
+                {tracks.length} 曲
+              </span>
+            </span>
           </button>
-        ))}
+
+          {playlists.map((playlist) => {
+            const active = selectedPlaylist === playlist.name;
+            return (
+              <button
+                key={playlist.name}
+                type="button"
+                onClick={() => selectPlaylist(playlist.name)}
+                className={`group flex min-h-24 flex-col justify-between rounded-lg border p-4 text-left transition-all ${
+                  active
+                    ? 'border-neon-purple/70 bg-neon-purple/10 shadow-[0_0_22px_rgba(214,116,255,0.14)]'
+                    : 'border-white/10 bg-surface hover:border-white/25 hover:bg-white/10'
+                }`}
+              >
+                <Folder
+                  className={`h-7 w-7 ${active ? 'text-neon-purple' : 'text-zen-mist/55 group-hover:text-white/80'}`}
+                  fill="currentColor"
+                  fillOpacity={0.2}
+                />
+                <span>
+                  <span className="block truncate text-sm font-bold text-white">{playlist.name}</span>
+                  <span className="mt-1 flex items-center gap-1 text-xs text-zen-mist/50">
+                    <Music2 className="h-3 w-3" />
+                    {playlist.count} 曲
+                  </span>
+                </span>
+              </button>
+            );
+          })}
+        </div>
       </div>
 
       {/* Search results (URL ?q= でナビと同期) */}
