@@ -7,7 +7,7 @@ import { TrackPageVinylLayout } from './TrackPageVinylLayout';
 import { TrackPageIllustrationLayout } from './TrackPageIllustrationLayout';
 import { TrackPageSpectrumLayout } from './TrackPageSpectrumLayout';
 import { TrackPagePatternMenu } from './TrackPagePatternMenu';
-import { ChevronLeft, Link2, Repeat2 } from 'lucide-react';
+import { ChevronLeft, Link2 } from 'lucide-react';
 
 const ILLUSTRATION_HERO_SRC = '/track-ui/character-duo.png';
 
@@ -44,8 +44,16 @@ export const TrackPage: React.FC = () => {
     isCurrent: m.isCurrent,
     isPlaying: m.isPlaying,
     canChangeTrack: m.canChangeTrack,
+    playbackScopeName: m.playbackScopeName,
+    playbackPosition: m.playbackPosition,
+    playbackTotal: m.playbackTotal,
+    nextTrack: m.nextTrack,
+    isRepeatEnabled: m.isRepeatEnabled,
+    isShuffleEnabled: m.isShuffleEnabled,
     onPlayPause: m.onPlayPause,
     goAdjacentTrack: m.goAdjacentTrack,
+    toggleRepeatEnabled: m.toggleRepeatEnabled,
+    toggleShuffleEnabled: m.toggleShuffleEnabled,
     volume: m.volume,
     onVolumeBarClick: m.onVolumeBarClick,
     spectrumPanelActive: pattern === 'spectrum',
@@ -70,18 +78,6 @@ export const TrackPage: React.FC = () => {
 
       <div className="fixed right-6 top-6 z-[60] flex items-center gap-3 md:right-10 md:top-8">
         <TrackPagePatternMenu placement="track" />
-        <button
-          type="button"
-          onClick={m.toggleRepeatEnabled}
-          className={`inline-flex items-center gap-1.5 text-xs transition-colors ${
-            m.isRepeatEnabled ? 'text-neon-cyan hover:text-neon-cyan/80' : 'text-white/40 hover:text-white/80'
-          }`}
-          aria-pressed={m.isRepeatEnabled}
-          aria-label={m.isRepeatEnabled ? 'リピートをオフにする' : 'リピートをオンにする'}
-        >
-          <Repeat2 className="h-3.5 w-3.5" strokeWidth={1.5} />
-          <span className="hidden sm:inline">{m.isRepeatEnabled ? 'リピートON' : 'リピートOFF'}</span>
-        </button>
         <button
           type="button"
           onClick={() => void m.handleShare()}

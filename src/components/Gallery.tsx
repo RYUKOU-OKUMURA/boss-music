@@ -2,7 +2,7 @@ import React, { useEffect, useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useAudioMain } from '../context/AudioContext';
 import { TrackCard } from './TrackCard';
-import { Folder, Music2, Play } from 'lucide-react';
+import { Folder, Music2, Play, Shuffle } from 'lucide-react';
 
 function trackMatchesQuery(
   track: { title: string; artist: string; description: string; tags: string[] },
@@ -38,11 +38,20 @@ export const Gallery: React.FC = () => {
     return playlistTracks.filter((t) => trackMatchesQuery(t, queryLower));
   }, [tracks, selectedPlaylist, queryRaw, queryLower]);
 
-  const shuffleStartIndex = useMemo(() => {
+  const startIndex = useMemo(() => {
     if (filteredTracks.length === 0) return 0;
     const i = tracks.findIndex((t) => t.id === filteredTracks[0].id);
     return i >= 0 ? i : 0;
   }, [filteredTracks, tracks]);
+
+  const startPlaylistPlayback = (shuffle: boolean) => {
+    if (filteredTracks.length === 0) return;
+    const firstTrack = shuffle
+      ? filteredTracks[Math.floor(Math.random() * filteredTracks.length)]
+      : filteredTracks[0];
+    const index = firstTrack ? tracks.findIndex((t) => t.id === firstTrack.id) : startIndex;
+    play(index >= 0 ? index : startIndex, selectedPlaylist, { shuffle });
+  };
 
   const selectPlaylist = (playlist: string | null) => {
     setActivePlaylist(playlist);
@@ -82,14 +91,24 @@ export const Gallery: React.FC = () => {
             毎日午前0時に更新。
           </p>
         </div>
-        <button
-          onClick={() => play(shuffleStartIndex, selectedPlaylist)}
-          disabled={filteredTracks.length === 0}
-          className="flex items-center gap-3 bg-neon-cyan text-black px-8 py-4 rounded-full font-bold text-sm tracking-wider hover:scale-105 transition-transform shadow-[0_0_30px_rgba(143,245,255,0.3)]"
-        >
-          <Play className="w-5 h-5" fill="currentColor" />
-          {selectedPlaylist ? `${selectedPlaylist} を再生` : 'ライブラリを再生'}
-        </button>
+        <div className="flex flex-wrap gap-3">
+          <button
+            onClick={() => startPlaylistPlayback(false)}
+            disabled={filteredTracks.length === 0}
+            className="flex items-center gap-3 bg-neon-cyan text-black px-8 py-4 rounded-full font-bold text-sm tracking-wider hover:scale-105 transition-transform shadow-[0_0_30px_rgba(143,245,255,0.3)] disabled:opacity-40 disabled:hover:scale-100"
+          >
+            <Play className="w-5 h-5" fill="currentColor" />
+            {selectedPlaylist ? `${selectedPlaylist} を再生` : 'ライブラリを再生'}
+          </button>
+          <button
+            onClick={() => startPlaylistPlayback(true)}
+            disabled={filteredTracks.length === 0}
+            className="flex items-center gap-3 rounded-full border border-neon-purple/50 bg-neon-purple/10 px-8 py-4 text-sm font-bold tracking-wider text-white transition-transform hover:scale-105 hover:bg-neon-purple/20 disabled:opacity-40 disabled:hover:scale-100"
+          >
+            <Shuffle className="w-5 h-5" />
+            シャッフル再生
+          </button>
+        </div>
       </div>
 
       {/* Playlist folders */}

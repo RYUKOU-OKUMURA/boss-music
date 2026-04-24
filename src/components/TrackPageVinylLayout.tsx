@@ -1,8 +1,8 @@
 import React from 'react';
 import { VinylDisc } from './VinylDisc';
-import { Play, Pause, Volume2, SkipBack, SkipForward } from 'lucide-react';
 import type { TrackPageLayoutProps } from './trackPageLayoutTypes';
 import { TrackSeekRow } from './TrackSeekRow';
+import { TrackPagePlaybackPanel } from './TrackPagePlaybackPanel';
 
 export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
   track,
@@ -12,6 +12,14 @@ export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
   canChangeTrack,
   onPlayPause,
   goAdjacentTrack,
+  playbackScopeName,
+  playbackPosition,
+  playbackTotal,
+  nextTrack,
+  isRepeatEnabled,
+  isShuffleEnabled,
+  toggleRepeatEnabled,
+  toggleShuffleEnabled,
   volume,
   onVolumeBarClick,
 }) => {
@@ -24,66 +32,27 @@ export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
           {track.title}
         </h1>
         <p className="mt-4 text-base font-light text-white/45 md:text-lg">{track.artist}</p>
-        {track.description?.trim() ? (
-          <p className="mt-6 line-clamp-3 text-sm font-light leading-relaxed text-white/35 md:text-base">
-            {track.description}
-          </p>
-        ) : null}
       </div>
 
       <TrackSeekRow variant="vinyl" isCurrent={isCurrent} />
 
-      <div className="mt-12 flex items-center justify-center gap-10 md:gap-14">
-        <button
-          type="button"
-          onClick={() => goAdjacentTrack(-1)}
-          disabled={!canChangeTrack}
-          className="p-2 text-white/50 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-25"
-          aria-label="前の曲"
-        >
-          <SkipBack className="h-10 w-10 md:h-11 md:w-11" strokeWidth={2} />
-        </button>
-        <button
-          type="button"
-          onClick={onPlayPause}
-          className="p-4 text-white transition-transform hover:scale-105"
-          aria-label={isCurrent && isPlaying ? '一時停止' : '再生'}
-        >
-          {isCurrent && isPlaying ? (
-            <Pause className="h-16 w-16 md:h-[4.5rem] md:w-[4.5rem]" fill="currentColor" strokeWidth={0} />
-          ) : (
-            <Play className="ml-1 h-16 w-16 md:h-[4.5rem] md:w-[4.5rem]" fill="currentColor" strokeWidth={0} />
-          )}
-        </button>
-        <button
-          type="button"
-          onClick={() => goAdjacentTrack(1)}
-          disabled={!canChangeTrack}
-          className="p-2 text-white/50 transition-colors hover:text-white disabled:pointer-events-none disabled:opacity-25"
-          aria-label="次の曲"
-        >
-          <SkipForward className="h-10 w-10 md:h-11 md:w-11" strokeWidth={2} />
-        </button>
-      </div>
-
-      <div className="mt-12 flex w-full max-w-md items-center gap-4 md:max-w-lg">
-        <Volume2 className="h-5 w-5 shrink-0 text-white/35" aria-hidden />
-        <div
-          className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-white/10"
-          onClick={onVolumeBarClick}
-          role="slider"
-          tabIndex={0}
-          aria-valuenow={Math.round(volume * 100)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="音量"
-        >
-          <div
-            className="absolute left-0 top-0 h-full rounded-full bg-white/50"
-            style={{ width: `${volume * 100}%` }}
-          />
-        </div>
-      </div>
+      <TrackPagePlaybackPanel
+        isCurrent={isCurrent}
+        isPlaying={isPlaying}
+        canChangeTrack={canChangeTrack}
+        playbackScopeName={playbackScopeName}
+        playbackPosition={playbackPosition}
+        playbackTotal={playbackTotal}
+        nextTrack={nextTrack}
+        isRepeatEnabled={isRepeatEnabled}
+        isShuffleEnabled={isShuffleEnabled}
+        onPlayPause={onPlayPause}
+        goAdjacentTrack={goAdjacentTrack}
+        toggleRepeatEnabled={toggleRepeatEnabled}
+        toggleShuffleEnabled={toggleShuffleEnabled}
+        volume={volume}
+        onVolumeBarClick={onVolumeBarClick}
+      />
     </div>
   );
 };

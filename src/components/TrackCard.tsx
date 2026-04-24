@@ -2,8 +2,7 @@ import React from 'react';
 import { useAudioMain, Track } from '../context/AudioContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { Play, Pause } from 'lucide-react';
-import { Link } from 'react-router-dom';
-import clsx from 'clsx';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 export const TrackCard: React.FC<{ track: Track; index: number; playbackPlaylist?: string | null }> = ({
   track,
@@ -11,11 +10,33 @@ export const TrackCard: React.FC<{ track: Track; index: number; playbackPlaylist
   playbackPlaylist,
 }) => {
   const { currentTrack, isPlaying, play, pause } = useAudioMain();
+  const location = useLocation();
+  const navigate = useNavigate();
   const isCurrent = currentTrack?.id === track.id;
   const coverImage = resolveCoverImageUrl(track);
+  const playlistSearch =
+    playbackPlaylist === undefined
+      ? location.search
+        : playbackPlaylist
+          ? `?playlist=${encodeURIComponent(playbackPlaylist)}`
+          : '';
+  const openTrackPage = () => {
+    navigate({ pathname: `/track/${track.id}`, search: playlistSearch });
+  };
 
   return (
-    <div className="group relative bg-surface-container rounded-2xl overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:bg-surface-bright flex flex-col">
+    <div
+      role="link"
+      tabIndex={0}
+      onClick={openTrackPage}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          openTrackPage();
+        }
+      }}
+      className="group relative bg-surface-container rounded-2xl overflow-hidden transition-all duration-300 hover:scale-[1.02] hover:bg-surface-bright flex flex-col cursor-pointer focus:outline-none focus:ring-2 focus:ring-neon-cyan/60"
+    >
       <div className="relative aspect-square overflow-hidden">
         {coverImage ? (
           <img
@@ -34,6 +55,7 @@ export const TrackCard: React.FC<{ track: Track; index: number; playbackPlaylist
           <button
             onClick={(e) => {
               e.preventDefault();
+              e.stopPropagation();
               isCurrent && isPlaying ? pause() : play(index, playbackPlaylist === undefined ? track.playlist : playbackPlaylist);
             }}
             className="w-14 h-14 rounded-full bg-neon-cyan text-black flex items-center justify-center transform translate-y-4 group-hover:translate-y-0 opacity-0 group-hover:opacity-100 transition-all duration-300 shadow-[0_0_20px_rgba(143,245,255,0.5)]"
@@ -60,9 +82,9 @@ export const TrackCard: React.FC<{ track: Track; index: number; playbackPlaylist
       
       <div className="p-4 flex-1 flex flex-col justify-between">
         <div>
-          <Link to={`/track/${track.id}`} className="text-lg font-headline font-bold text-white hover:text-neon-cyan transition-colors line-clamp-1">
+          <span className="text-lg font-headline font-bold text-white group-hover:text-neon-cyan transition-colors line-clamp-1">
             {track.title}
-          </Link>
+          </span>
           <p className="text-sm text-zen-mist/60 mt-1 line-clamp-1">{track.artist}</p>
           <p className="text-xs text-neon-cyan/70 mt-3 line-clamp-1">{track.playlist}</p>
         </div>

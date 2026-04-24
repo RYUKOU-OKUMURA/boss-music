@@ -31,20 +31,41 @@ interface TracksApiResponse {
   tracks: Track[];
 }
 
+type ScopedTrack = { track: Track; index: number };
+
+interface PlayOptions {
+  shuffle?: boolean;
+}
+
 /** timeupdate からの setState を間引き、再生中の Provider 再レンダーを抑える（最大約 5 回/秒） */
 const TIME_UI_THROTTLE_MS = 200;
+
+function buildShuffleScopeKey(scopedTracks: ScopedTrack[]): string {
+  return scopedTracks.map(({ track }) => track.id).join('|');
+}
+
+function shuffledIndexes(indexes: number[]): number[] {
+  const next = [...indexes];
+  for (let i = next.length - 1; i > 0; i -= 1) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [next[i], next[j]] = [next[j], next[i]];
+  }
+  return next;
+}
 
 interface AudioContextType {
   tracks: Track[];
   currentTrackIndex: number;
   currentTrack: Track | null;
   activePlaylist: string | null;
+  shuffleUpcomingTrack: Track | null;
   isRepeatEnabled: boolean;
+  isShuffleEnabled: boolean;
   isPlaying: boolean;
   currentTime: number;
   duration: number;
   volume: number;
-  play: (index?: number, playlist?: string | null) => void;
+  play: (index?: number, playlist?: string | null, options?: PlayOptions) => void;
   pause: () => void;
   resume: () => void;
   next: () => void;
@@ -54,6 +75,8 @@ interface AudioContextType {
   setActivePlaylist: (playlist: string | null) => void;
   setRepeatEnabled: (enabled: boolean) => void;
   toggleRepeatEnabled: () => void;
+  setShuffleEnabled: (enabled: boolean) => void;
+  toggleShuffleEnabled: () => void;
   isLoading: boolean;
   /** Web Audio の Analyser（スペクトラム可視化用）。`MediaElementSource` は audio 要素につき 1 回だけ接続 */
   audioAnalyserRef: RefObject<AnalyserNode | null>;
@@ -94,6 +117,8 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const [currentTrackIndex, setCurrentTrackIndex] = useState<number>(0);
   const [activePlaylist, setActivePlaylistState] = useState<string | null>(null);
   const [isRepeatEnabled, setRepeatEnabled] = useState<boolean>(true);
+  const [isShuffleEnabled, setShuffleEnabledState] = useState<boolean>(false);
+  const [nextShuffleTrackIndex, setNextShuffleTrackIndex] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState<boolean>(false);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
@@ -110,15 +135,29 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
   const blobUrlRef = useRef<string | null>(null);
   const isPlayingRef = useRef(isPlaying);
   const lastTimeUiEmitRef = useRef(0);
+  const shuffleRemainingRef = useRef<number[]>([]);
+  const shuffleHistoryRef = useRef<number[]>([]);
+  const shuffleScopeKeyRef = useRef('');
 
   useEffect(() => {
     isPlayingRef.current = isPlaying;
   }, [isPlaying]);
 
   const currentTrack = tracks[currentTrackIndex] || null;
+  const shuffleUpcomingTrack = nextShuffleTrackIndex !== null ? tracks[nextShuffleTrackIndex] ?? null : null;
 
   const setActivePlaylist = useCallback((playlist: string | null) => {
     setActivePlaylistState(playlist?.trim() || null);
+  }, []);
+
+  const setShuffleEnabled = useCallback((enabled: boolean) => {
+    setShuffleEnabledState(enabled);
+    if (!enabled) {
+      shuffleRemainingRef.current = [];
+      shuffleHistoryRef.current = [];
+      shuffleScopeKeyRef.current = '';
+      setNextShuffleTrackIndex(null);
+    }
   }, []);
 
   const getScopedTracks = useCallback(
@@ -134,17 +173,71 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     [tracks]
   );
 
-  const play = useCallback((index?: number, playlist?: string | null) => {
+  const primeShuffleQueue = useCallback((scopedTracks: ScopedTrack[], currentIndex: number) => {
+    shuffleScopeKeyRef.current = buildShuffleScopeKey(scopedTracks);
+    shuffleHistoryRef.current = [];
+    shuffleRemainingRef.current = shuffledIndexes(
+      scopedTracks.map(({ index: scopedIndex }) => scopedIndex).filter((scopedIndex) => scopedIndex !== currentIndex)
+    );
+    setNextShuffleTrackIndex(shuffleRemainingRef.current[0] ?? null);
+  }, []);
+
+  const takeNextShuffleTrack = useCallback(
+    (scopedTracks: ScopedTrack[], currentIndex: number, shouldRestart: boolean): ScopedTrack | null => {
+      if (scopedTracks.length === 0) return null;
+      if (scopedTracks.length === 1) return shouldRestart ? scopedTracks[0] : null;
+
+      const scopeKey = buildShuffleScopeKey(scopedTracks);
+      if (shuffleScopeKeyRef.current !== scopeKey) {
+        primeShuffleQueue(scopedTracks, currentIndex);
+      }
+
+      shuffleRemainingRef.current = shuffleRemainingRef.current.filter((index) => index !== currentIndex);
+
+      if (shuffleRemainingRef.current.length === 0) {
+        if (!shouldRestart) return null;
+        primeShuffleQueue(scopedTracks, currentIndex);
+      }
+
+      const nextIndex = shuffleRemainingRef.current.shift();
+      setNextShuffleTrackIndex(shuffleRemainingRef.current[0] ?? null);
+      if (nextIndex === undefined) return null;
+      return scopedTracks.find(({ index }) => index === nextIndex) ?? null;
+    },
+    [primeShuffleQueue]
+  );
+
+  const play = useCallback((index?: number, playlist?: string | null, options?: PlayOptions) => {
     if (index !== undefined && index >= 0 && index < tracks.length) {
       setCurrentTrackIndex(index);
     }
+    const nextPlaylist =
+      playlist !== undefined
+        ? playlist?.trim() || null
+        : index !== undefined
+          ? tracks[index]?.playlist?.trim() || null
+          : activePlaylist;
     if (playlist !== undefined) {
-      setActivePlaylistState(playlist?.trim() || null);
+      setActivePlaylistState(nextPlaylist);
     } else if (index !== undefined) {
-      setActivePlaylistState(tracks[index]?.playlist?.trim() || null);
+      setActivePlaylistState(nextPlaylist);
+    }
+    if (options?.shuffle !== undefined) {
+      setShuffleEnabledState(options.shuffle);
+      if (!options.shuffle) {
+        shuffleRemainingRef.current = [];
+        shuffleHistoryRef.current = [];
+        shuffleScopeKeyRef.current = '';
+        setNextShuffleTrackIndex(null);
+      }
+    }
+    const nextShuffleEnabled = options?.shuffle ?? isShuffleEnabled;
+    if (nextShuffleEnabled && index !== undefined && index >= 0 && index < tracks.length) {
+      const scopedTracks = getScopedTracks(nextPlaylist);
+      primeShuffleQueue(scopedTracks, index);
     }
     setIsPlaying(true);
-  }, [tracks]);
+  }, [tracks, activePlaylist, isShuffleEnabled, getScopedTracks, primeShuffleQueue]);
 
   const pause = useCallback(() => {
     setIsPlaying(false);
@@ -158,21 +251,50 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     setRepeatEnabled((enabled) => !enabled);
   }, []);
 
+  const toggleShuffleEnabled = useCallback(() => {
+    setShuffleEnabledState((enabled) => {
+      const nextEnabled = !enabled;
+      if (!nextEnabled) {
+        shuffleRemainingRef.current = [];
+        shuffleHistoryRef.current = [];
+        shuffleScopeKeyRef.current = '';
+        setNextShuffleTrackIndex(null);
+      } else {
+        primeShuffleQueue(getScopedTracks(activePlaylist), currentTrackIndex);
+      }
+      return nextEnabled;
+    });
+  }, [getScopedTracks, activePlaylist, currentTrackIndex, primeShuffleQueue]);
+
   const next = useCallback(() => {
     if (tracks.length === 0) return;
     const scopedTracks = getScopedTracks(activePlaylist);
     if (scopedTracks.length === 0) return;
     const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === currentTrackIndex);
     const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
-    const nextScoped = scopedTracks[(fromScopedIndex + 1) % scopedTracks.length];
+    const nextScoped = isShuffleEnabled
+      ? takeNextShuffleTrack(scopedTracks, currentTrackIndex, true)
+      : scopedTracks[(fromScopedIndex + 1) % scopedTracks.length];
     if (!nextScoped) return;
+    if (isShuffleEnabled) {
+      shuffleHistoryRef.current.push(currentTrackIndex);
+    }
     setCurrentTrackIndex(nextScoped.index);
     setIsPlaying(true);
 
     if (location.pathname.startsWith('/track/')) {
       navigate(`/track/${nextScoped.track.id}`, { replace: true });
     }
-  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, location.pathname, navigate]);
+  }, [
+    tracks.length,
+    getScopedTracks,
+    activePlaylist,
+    currentTrackIndex,
+    isShuffleEnabled,
+    takeNextShuffleTrack,
+    location.pathname,
+    navigate,
+  ]);
 
   const handleTrackEnded = useCallback(() => {
     if (tracks.length === 0) return;
@@ -181,21 +303,39 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === currentTrackIndex);
     const isLastScopedTrack = currentScopedIndex === scopedTracks.length - 1;
 
-    if (!isRepeatEnabled && isLastScopedTrack) {
+    if (!isShuffleEnabled && !isRepeatEnabled && isLastScopedTrack) {
       setIsPlaying(false);
       return;
     }
 
     const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
-    const nextScoped = scopedTracks[(fromScopedIndex + 1) % scopedTracks.length];
-    if (!nextScoped) return;
+    const nextScoped = isShuffleEnabled
+      ? takeNextShuffleTrack(scopedTracks, currentTrackIndex, isRepeatEnabled)
+      : scopedTracks[(fromScopedIndex + 1) % scopedTracks.length];
+    if (!nextScoped) {
+      setIsPlaying(false);
+      return;
+    }
+    if (isShuffleEnabled) {
+      shuffleHistoryRef.current.push(currentTrackIndex);
+    }
     setCurrentTrackIndex(nextScoped.index);
     setIsPlaying(true);
 
     if (location.pathname.startsWith('/track/')) {
       navigate(`/track/${nextScoped.track.id}`, { replace: true });
     }
-  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, isRepeatEnabled, location.pathname, navigate]);
+  }, [
+    tracks.length,
+    getScopedTracks,
+    activePlaylist,
+    currentTrackIndex,
+    isRepeatEnabled,
+    isShuffleEnabled,
+    takeNextShuffleTrack,
+    location.pathname,
+    navigate,
+  ]);
 
   const prev = useCallback(() => {
     if (tracks.length === 0) return;
@@ -203,15 +343,23 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     if (scopedTracks.length === 0) return;
     const currentScopedIndex = scopedTracks.findIndex(({ index }) => index === currentTrackIndex);
     const fromScopedIndex = currentScopedIndex >= 0 ? currentScopedIndex : 0;
-    const prevScoped = scopedTracks[(fromScopedIndex - 1 + scopedTracks.length) % scopedTracks.length];
+    const previousShuffleIndex = isShuffleEnabled ? shuffleHistoryRef.current.pop() : undefined;
+    const prevScoped =
+      previousShuffleIndex !== undefined
+        ? scopedTracks.find(({ index }) => index === previousShuffleIndex)
+        : scopedTracks[(fromScopedIndex - 1 + scopedTracks.length) % scopedTracks.length];
     if (!prevScoped) return;
+    if (isShuffleEnabled) {
+      shuffleRemainingRef.current.unshift(currentTrackIndex);
+      setNextShuffleTrackIndex(shuffleRemainingRef.current[0] ?? null);
+    }
     setCurrentTrackIndex(prevScoped.index);
     setIsPlaying(true);
 
     if (location.pathname.startsWith('/track/')) {
       navigate(`/track/${prevScoped.track.id}`, { replace: true });
     }
-  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, location.pathname, navigate]);
+  }, [tracks.length, getScopedTracks, activePlaylist, currentTrackIndex, isShuffleEnabled, location.pathname, navigate]);
 
   const seek = useCallback((time: number) => {
     if (audioRef.current) {
@@ -234,7 +382,9 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       currentTrackIndex,
       currentTrack,
       activePlaylist,
+      shuffleUpcomingTrack,
       isRepeatEnabled,
+      isShuffleEnabled,
       isPlaying,
       duration,
       volume,
@@ -248,6 +398,8 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setActivePlaylist,
       setRepeatEnabled,
       toggleRepeatEnabled,
+      setShuffleEnabled,
+      toggleShuffleEnabled,
       isLoading,
       audioAnalyserRef,
     }),
@@ -256,7 +408,9 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       currentTrackIndex,
       currentTrack,
       activePlaylist,
+      shuffleUpcomingTrack,
       isRepeatEnabled,
+      isShuffleEnabled,
       isPlaying,
       duration,
       volume,
@@ -270,6 +424,8 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
       setActivePlaylist,
       setRepeatEnabled,
       toggleRepeatEnabled,
+      setShuffleEnabled,
+      toggleShuffleEnabled,
       isLoading,
     ]
   );

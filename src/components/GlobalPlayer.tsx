@@ -1,7 +1,7 @@
 import React from 'react';
 import { useAudio } from '../context/AudioContext';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
-import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2, Repeat2 } from 'lucide-react';
+import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2, Repeat2, Shuffle } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
 
 export const GlobalPlayer: React.FC = () => {
@@ -9,6 +9,7 @@ export const GlobalPlayer: React.FC = () => {
     currentTrack,
     activePlaylist,
     isRepeatEnabled,
+    isShuffleEnabled,
     isPlaying,
     play,
     pause,
@@ -56,6 +57,7 @@ export const GlobalPlayer: React.FC = () => {
           <p className="text-[10px] text-neon-cyan/70 mt-1 flex items-center gap-1">
             <Repeat2 className="w-3 h-3" />
             {activePlaylist ?? 'すべて'} / {isRepeatEnabled ? 'リピートON' : 'リピートOFF'}
+            {isShuffleEnabled ? <Shuffle className="ml-1 w-3 h-3 text-neon-purple" /> : null}
           </p>
         </div>
       </div>

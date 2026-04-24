@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { useNavigate, useParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAudioMain } from '../context/AudioContext';
 import type { Track } from '../context/AudioContext';
 
@@ -18,23 +18,33 @@ export interface UseTrackPagePlaybackResult {
   isPlaying: boolean;
   canChangeTrack: boolean;
   volume: number;
+  playbackScopeName: string;
+  playbackPosition: number;
+  playbackTotal: number;
+  nextTrack: Track | null;
   isRepeatEnabled: boolean;
+  isShuffleEnabled: boolean;
   shareFeedback: 'idle' | 'copied';
   goToLibrary: () => void;
   goAdjacentTrack: (delta: -1 | 1) => void;
   handleShare: () => Promise<void>;
   onPlayPause: () => void;
   toggleRepeatEnabled: () => void;
+  toggleShuffleEnabled: () => void;
   onVolumeBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
 }
 
 export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const playlistParam = searchParams.get('playlist')?.trim() || null;
   const {
     tracks,
     currentTrackIndex,
     activePlaylist,
+    setActivePlaylist,
+    shuffleUpcomingTrack,
     isPlaying,
     play,
     pause,
@@ -43,11 +53,19 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     setVolume,
     isRepeatEnabled,
     toggleRepeatEnabled,
+    isShuffleEnabled,
+    toggleShuffleEnabled,
   } = useAudioMain();
   const [shareFeedback, setShareFeedback] = useState<'idle' | 'copied'>('idle');
 
   const trackIndex = tracks.findIndex((t) => t.id === id);
   const track = trackIndex >= 0 ? tracks[trackIndex] : undefined;
+
+  useEffect(() => {
+    if (playlistParam) {
+      setActivePlaylist(playlistParam);
+    }
+  }, [playlistParam, setActivePlaylist]);
 
   useEffect(() => {
     if (!isLoading && !track) {
@@ -56,8 +74,11 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
   }, [track, navigate, isLoading]);
 
   const goToLibrary = useCallback(() => {
-    navigate('/');
-  }, [navigate]);
+    navigate({
+      pathname: '/',
+      search: playlistParam ? `?playlist=${encodeURIComponent(playlistParam)}` : '',
+    });
+  }, [navigate, playlistParam]);
 
   const goAdjacentTrack = useCallback(
     (delta: -1 | 1) => {
@@ -124,10 +145,24 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
 
   const isCurrent = currentTrackIndex === trackIndex;
   const scopedPlaylistForControls = activePlaylist ?? (currentTrackIndex === trackIndex ? null : track?.playlist ?? null);
-  const scopedTrackCount = scopedPlaylistForControls
-    ? tracks.filter((t) => t.playlist === scopedPlaylistForControls).length
-    : tracks.length;
+  const scopedTracks = scopedPlaylistForControls
+    ? tracks.map((t, index) => ({ track: t, index })).filter(({ track: t }) => t.playlist === scopedPlaylistForControls)
+    : tracks.map((t, index) => ({ track: t, index }));
+  const scopedTrackCount = scopedTracks.length;
   const canChangeTrack = scopedTrackCount > 1;
+  const scopedCurrentPosition = scopedTracks.findIndex(({ index }) => index === trackIndex);
+  const playbackPosition = scopedCurrentPosition >= 0 ? scopedCurrentPosition + 1 : 0;
+  const playbackScopeName = scopedPlaylistForControls ?? 'すべて';
+  const sequentialNextTrack =
+    scopedCurrentPosition >= 0 && scopedTracks.length > 0
+      ? scopedTracks[(scopedCurrentPosition + 1) % scopedTracks.length]?.track ?? null
+      : null;
+  const isAtScopeEnd = scopedCurrentPosition === scopedTracks.length - 1;
+  const nextTrack = isShuffleEnabled
+    ? shuffleUpcomingTrack
+    : !isRepeatEnabled && isAtScopeEnd
+      ? null
+      : sequentialNextTrack;
 
   const onPlayPause = useCallback(() => {
     if (!track) return;
@@ -155,13 +190,19 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     isPlaying,
     canChangeTrack,
     volume,
+    playbackScopeName,
+    playbackPosition,
+    playbackTotal: scopedTrackCount,
+    nextTrack,
     isRepeatEnabled,
+    isShuffleEnabled,
     shareFeedback,
     goToLibrary,
     goAdjacentTrack,
     handleShare,
     onPlayPause,
     toggleRepeatEnabled,
+    toggleShuffleEnabled,
     onVolumeBarClick,
   };
 }
