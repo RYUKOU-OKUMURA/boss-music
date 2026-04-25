@@ -6,6 +6,12 @@ import { adminRouter } from './routes/admin';
 import { healthRouter } from './routes/health';
 
 function mountApiRoutes(app: Application) {
+  app.use((_req, res, next) => {
+    res.setHeader('Cache-Control', 'no-store, max-age=0');
+    res.setHeader('CDN-Cache-Control', 'no-store');
+    res.setHeader('Vercel-CDN-Cache-Control', 'no-store');
+    next();
+  });
   app.use(cookieParser());
   app.use(express.json());
 

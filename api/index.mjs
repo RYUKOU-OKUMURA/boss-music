@@ -946,6 +946,12 @@ healthRouter.get("/health", (_req, res) => {
 
 // server/app.ts
 function mountApiRoutes(app2) {
+  app2.use((_req, res, next) => {
+    res.setHeader("Cache-Control", "no-store, max-age=0");
+    res.setHeader("CDN-Cache-Control", "no-store");
+    res.setHeader("Vercel-CDN-Cache-Control", "no-store");
+    next();
+  });
   app2.use(cookieParser());
   app2.use(express.json());
   app2.use("/api", tracksRouter);

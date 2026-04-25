@@ -44,7 +44,7 @@ export async function deleteJson<T>(path: string, extraHeaders?: Record<string, 
 }
 
 export async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: 'include' });
+  const res = await fetch(path, { credentials: 'include', cache: 'no-store' });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);

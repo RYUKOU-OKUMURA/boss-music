@@ -454,7 +454,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     async function loadTracks() {
       setIsLoading(true);
       try {
-        const res = await fetch('/api/tracks');
+        const res = await fetch('/api/tracks', { cache: 'no-store' });
         if (!res.ok) throw new Error(await res.text());
         const data = (await res.json()) as TracksApiResponse;
         const nextTracks = Array.isArray(data.tracks) ? data.tracks : [];
@@ -472,7 +472,7 @@ export const AudioProvider: React.FC<{ children: ReactNode }> = ({ children }) =
     loadTracks();
 
     const reload = () => {
-      fetch('/api/tracks')
+      fetch('/api/tracks', { cache: 'no-store' })
         .then((r) => r.json())
         .then((data: TracksApiResponse) => {
           setTracks(Array.isArray(data.tracks) ? data.tracks : []);
