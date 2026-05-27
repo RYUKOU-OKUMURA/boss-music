@@ -43,13 +43,31 @@ export async function deleteJson<T>(path: string, extraHeaders?: Record<string, 
   return (await res.json()) as T;
 }
 
-export async function getJson<T>(path: string): Promise<T> {
-  const res = await fetch(path, { credentials: 'include', cache: 'no-store' });
+export async function getJson<T>(path: string, extraHeaders?: Record<string, string>): Promise<T> {
+  const res = await fetch(path, {
+    credentials: 'include',
+    cache: 'no-store',
+    headers: {
+      ...(extraHeaders ?? {}),
+    },
+  });
   if (!res.ok) {
     const text = await res.text();
     throw new Error(text || res.statusText);
   }
   return (await res.json()) as T;
+}
+
+export function isAdminAuthError(message: string): boolean {
+  const lower = message.toLowerCase();
+  return lower.includes('unauthorized') || lower.includes('401');
+}
+
+export function formatAdminAuthError(message: string): string {
+  if (isAdminAuthError(message)) {
+    return '管理者認証に失敗しました。ADMIN_SECRET と画面のシークレットが一致するか確認してください。';
+  }
+  return message;
 }
 
 export function parseErrorMessage(raw: string): string {

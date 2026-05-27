@@ -58,17 +58,24 @@ function headerString(req: Request, name: string): string | undefined {
   return typeof s === 'string' ? s.trim() : undefined;
 }
 
-export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+export function isAdminAuthenticated(req: Request): boolean {
   const adminSecret = process.env.ADMIN_SECRET?.trim();
   const sentSecret = headerString(req, 'x-admin-secret');
   if (adminSecret && sentSecret && sentSecret === adminSecret) {
-    next();
-    return;
+    return true;
   }
 
   const reqCookies = (req as Request & { cookies?: Record<string, string> }).cookies;
   const token = reqCookies?.[COOKIE] ?? parseCookies(req.headers.cookie)[COOKIE];
-  if (verifyAdminSessionToken(token)) {
+  return verifyAdminSessionToken(token);
+}
+
+export function isAdminSecretConfigured(): boolean {
+  return Boolean(process.env.ADMIN_SECRET?.trim());
+}
+
+export function requireAdmin(req: Request, res: Response, next: NextFunction): void {
+  if (isAdminAuthenticated(req)) {
     next();
     return;
   }

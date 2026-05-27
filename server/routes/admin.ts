@@ -21,7 +21,13 @@ import {
   updateTrackPlaylistById,
   type UploadedBlobRef,
 } from '../services/tracksDb';
-import { adminCookieName, createAdminSessionToken, requireAdmin } from '../middleware/adminAuth';
+import {
+  adminCookieName,
+  createAdminSessionToken,
+  isAdminAuthenticated,
+  isAdminSecretConfigured,
+  requireAdmin,
+} from '../middleware/adminAuth';
 import { asyncHandler } from '../utils/asyncHandler';
 import { toPublicTrack } from '../utils/trackPublic';
 
@@ -124,41 +130,45 @@ async function getStorageStatus() {
   const missing: string[] = [];
   if (!process.env.DATABASE_URL?.trim()) missing.push('DATABASE_URL');
   if (!process.env.BLOB_READ_WRITE_TOKEN?.trim()) missing.push('BLOB_READ_WRITE_TOKEN');
-  const base = {
-    storage: 'vercel-blob+neon',
-    missing,
-  };
-  if (missing.length) {
-    return {
-      ...base,
-      configOk: false,
-      reason: `${missing.join(', ')} is required`,
-    };
+
+  let dbOk = false;
+  let blobOk = false;
+  let reason: string | undefined;
+
+  if (process.env.DATABASE_URL?.trim()) {
+    try {
+      await ensureTracksSchema();
+      dbOk = true;
+    } catch (error) {
+      reason = `Neon DB check failed: ${safeStatusMessage(error)}`;
+    }
   }
 
-  try {
-    await list({ limit: 1 });
-  } catch (error) {
-    return {
-      ...base,
-      configOk: false,
-      reason: `Vercel Blob check failed: ${safeStatusMessage(error)}`,
-    };
+  if (process.env.BLOB_READ_WRITE_TOKEN?.trim()) {
+    try {
+      await list({ limit: 1 });
+      blobOk = true;
+    } catch (error) {
+      if (!reason) {
+        reason = `Vercel Blob check failed: ${safeStatusMessage(error)}`;
+      }
+    }
   }
 
-  try {
-    await ensureTracksSchema();
-  } catch (error) {
-    return {
-      ...base,
-      configOk: false,
-      reason: `Neon DB check failed: ${safeStatusMessage(error)}`,
-    };
+  if (missing.length && !reason) {
+    reason = `${missing.join(', ')} is required`;
   }
+
+  const configOk = dbOk && blobOk;
 
   return {
-    ...base,
-    configOk: true,
+    storage: 'vercel-blob+neon',
+    missing,
+    dbOk,
+    blobOk,
+    configOk,
+    adminSecretConfigured: isAdminSecretConfigured(),
+    ...(reason ? { reason } : {}),
   };
 }
 
@@ -167,6 +177,20 @@ adminRouter.get(
   asyncHandler(async (_req, res) => {
     const status = await getStorageStatus();
     res.json(status);
+  })
+);
+
+adminRouter.get(
+  '/admin/auth-status',
+  asyncHandler(async (req, res) => {
+    const body: { adminSecretConfigured: boolean; authenticated?: boolean } = {
+      adminSecretConfigured: isAdminSecretConfigured(),
+    };
+    const sentSecret = String(req.headers['x-admin-secret'] ?? '').trim();
+    if (sentSecret) {
+      body.authenticated = isAdminAuthenticated(req);
+    }
+    res.json(body);
   })
 );
 

@@ -4,6 +4,7 @@ import {
   createAuthHeaders,
   deleteJson,
   explainUploadError,
+  formatAdminAuthError,
   getJson,
   parseErrorMessage,
   postJson,
@@ -11,7 +12,7 @@ import {
 import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES } from '../admin/constants';
 import { normalizeMimeType, uploadFileToBlob } from '../admin/blobBrowserUpload';
 import { formatBytes } from '../admin/formatBytes';
-import type { StorageStatusResponse, UploadedBlobInfo } from '../admin/types';
+import type { AdminAuthState, AuthStatusResponse, StorageStatusResponse, UploadedBlobInfo } from '../admin/types';
 import { parseMp3Metadata } from '../admin/parseMp3Id3';
 
 const PLAYLIST_PRESETS = ['BGM', 'お気に入り'];
@@ -48,6 +49,76 @@ function saveAdminSecret(secret: string): void {
   }
 }
 
+function reportMutationError(
+  setMessage: (msg: string) => void,
+  raw: string,
+  explain?: (msg: string) => string
+): void {
+  const msg = parseErrorMessage(raw);
+  const authMsg = formatAdminAuthError(msg);
+  if (authMsg !== msg) {
+    setMessage(`エラー: ${authMsg}`);
+    return;
+  }
+  setMessage(`エラー: ${explain ? explain(msg) : msg}`);
+}
+
+interface TrackPlaylistInputProps {
+  trackId: string;
+  value: string;
+  disabled: boolean;
+  playlistOptions: string[];
+  onCommit: (trackId: string, nextPlaylist: string) => void | Promise<void>;
+}
+
+const TrackPlaylistInput: React.FC<TrackPlaylistInputProps> = ({
+  trackId,
+  value,
+  disabled,
+  playlistOptions,
+  onCommit,
+}) => {
+  const [localValue, setLocalValue] = useState(value);
+  const listId = `track-playlist-${trackId}`;
+
+  useEffect(() => {
+    setLocalValue(value);
+  }, [value]);
+
+  const commit = () => {
+    const normalized = localValue.trim() || 'BGM';
+    const current = value.trim() || 'BGM';
+    if (normalized !== current) {
+      void onCommit(trackId, normalized);
+    }
+  };
+
+  return (
+    <>
+      <input
+        type="text"
+        list={listId}
+        value={localValue}
+        onChange={(ev) => setLocalValue(ev.target.value)}
+        onBlur={commit}
+        onKeyDown={(ev) => {
+          if (ev.key === 'Enter') {
+            ev.preventDefault();
+            commit();
+          }
+        }}
+        disabled={disabled}
+        className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-xs font-bold text-white disabled:opacity-40"
+      />
+      <datalist id={listId}>
+        {playlistOptions.map((option) => (
+          <option key={option} value={option} />
+        ))}
+      </datalist>
+    </>
+  );
+};
+
 export const Admin: React.FC = () => {
   const [title, setTitle] = useState('');
   const [artist, setArtist] = useState('');
@@ -73,6 +144,7 @@ export const Admin: React.FC = () => {
   const [tracksLoading, setTracksLoading] = useState(true);
   const [tracksLoadError, setTracksLoadError] = useState<string | null>(null);
   const [rowBusyId, setRowBusyId] = useState<string | null>(null);
+  const [authState, setAuthState] = useState<AdminAuthState>('unknown');
 
   /** 画像ファイル入力でユーザーが選んだあとは、MP3 の ID3 ジャケで上書きしない */
   const coverChosenManuallyRef = useRef(false);
@@ -153,16 +225,62 @@ export const Admin: React.FC = () => {
     } catch {
       setStorageStatus({
         configOk: false,
+        dbOk: false,
+        blobOk: false,
         storage: 'vercel-blob+neon',
         reason: 'Blob / DB 状態を確認できませんでした。',
       });
     }
   }, []);
 
+  const refreshAuthStatus = useCallback(async () => {
+    const secret = viteSecret?.trim() || adminSecret.trim();
+    try {
+      const data = await getJson<AuthStatusResponse>(
+        '/api/admin/auth-status',
+        secret ? createAuthHeaders(secret) : undefined
+      );
+      if (!data.adminSecretConfigured) {
+        setAuthState('server_unconfigured');
+        return;
+      }
+      if (!secret) {
+        setAuthState('missing_secret');
+        return;
+      }
+      if (data.authenticated === true) {
+        setAuthState('ok');
+        return;
+      }
+      if (data.authenticated === false) {
+        setAuthState('invalid_secret');
+        return;
+      }
+      setAuthState('missing_secret');
+    } catch {
+      setAuthState('unknown');
+    }
+  }, [viteSecret, adminSecret]);
+
   useEffect(() => {
     void refreshTracks();
     void refreshStorageStatus();
   }, [refreshStorageStatus, refreshTracks]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      void refreshAuthStatus();
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [refreshAuthStatus]);
+
+  useEffect(() => {
+    if (authState !== 'ok') return;
+    const headers = authHeaders();
+    void postJson('/api/admin/session', {}, headers).catch(() => {
+      // Cookie is optional; header auth remains primary.
+    });
+  }, [authState, authHeaders]);
 
   useEffect(() => {
     const onCatalog = () => void refreshTracks();
@@ -280,7 +398,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Track reorder failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+      reportMutationError(setMessage, raw);
       await refreshTracks();
     } finally {
       setRowBusyId(null);
@@ -342,7 +460,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Track metadata update failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+      reportMutationError(setMessage, raw);
     } finally {
       setRowBusyId(null);
     }
@@ -375,7 +493,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Playlist rename failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+      reportMutationError(setMessage, raw);
     } finally {
       setRowBusyId(null);
     }
@@ -403,12 +521,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Cover replace failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      const msg = parseErrorMessage(raw);
-      if (msg.includes('Unauthorized') || msg.includes('401')) {
-        setMessage('エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。');
-      } else {
-        setMessage(`エラー: ${explainUploadError(msg)}`);
-      }
+      reportMutationError(setMessage, raw, explainUploadError);
     } finally {
       setRowBusyId(null);
       void refreshStorageStatus();
@@ -428,7 +541,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Delete cover failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+      reportMutationError(setMessage, raw);
     } finally {
       setRowBusyId(null);
     }
@@ -445,13 +558,16 @@ export const Admin: React.FC = () => {
         { playlist: normalizedPlaylist },
         headers
       );
+      if (editingTrackId === trackId) {
+        setEditDraft((prev) => (prev ? { ...prev, playlist: normalizedPlaylist } : prev));
+      }
       setMessage('プレイリストを更新しました。');
       window.dispatchEvent(new Event('boss-music-catalog-changed'));
       await refreshTracks();
     } catch (error: unknown) {
       console.error('Playlist update failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+      reportMutationError(setMessage, raw);
     } finally {
       setRowBusyId(null);
     }
@@ -481,7 +597,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Delete track failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      setMessage(`エラー: ${parseErrorMessage(raw)}`);
+      reportMutationError(setMessage, raw);
     } finally {
       setRowBusyId(null);
     }
@@ -557,12 +673,7 @@ export const Admin: React.FC = () => {
     } catch (error: unknown) {
       console.error('Upload failed', error);
       const raw = error instanceof Error ? error.message : '不明なエラー';
-      const msg = parseErrorMessage(raw);
-      if (msg.includes('Unauthorized') || msg.includes('401')) {
-        setMessage('エラー: 管理者認証に失敗しました。SESSION_SECRET または ADMIN_SECRET の設定を確認してください。');
-      } else {
-        setMessage(`エラー: ${explainUploadError(msg)}`);
-      }
+      reportMutationError(setMessage, raw, explainUploadError);
       setUploadProgress(0);
     } finally {
       setIsUploading(false);
@@ -570,9 +681,25 @@ export const Admin: React.FC = () => {
     }
   };
 
+  const dbOk = storageStatus?.dbOk !== false;
   const configOk = storageStatus?.configOk !== false;
   const rowSectionDisabled = rowBusyId !== null || isUploading;
-  const canReorder = playlistFilter === ALL_PLAYLISTS && !rowSectionDisabled && configOk;
+  const canReorder = playlistFilter === ALL_PLAYLISTS && !rowSectionDisabled && dbOk;
+
+  const authBannerMessage = (() => {
+    switch (authState) {
+      case 'server_unconfigured':
+        return 'Vercel / ローカル環境に ADMIN_SECRET を設定してください。';
+      case 'missing_secret':
+        return '管理者シークレットを入力してください（ADMIN_SECRET と同じ値）。';
+      case 'invalid_secret':
+        return '管理者シークレットが一致しません。「保存を削除」から再入力してください。';
+      case 'ok':
+        return '管理者認証 OK';
+      default:
+        return null;
+    }
+  })();
 
   return (
     <div className="min-h-screen bg-zen-bg text-zen-mist p-6 md:p-12 pb-32">
@@ -601,12 +728,26 @@ export const Admin: React.FC = () => {
                 storage: <span className="font-mono">{storageStatus.storage}</span>
               </span>
             )}
+            {storageStatus?.dbOk === true && <span className="text-xs text-neon-green">DB 接続 OK</span>}
+            {storageStatus?.blobOk === true && <span className="text-xs text-neon-green">Blob 接続 OK</span>}
             {storageStatus?.configOk === true && <span className="text-xs text-neon-green">接続確認済み</span>}
-            {storageStatus?.configOk === false && (
+            {storageStatus && storageStatus.configOk === false && (
               <span className="text-xs text-amber-400">{storageStatus.reason ?? '本番設定が不足しています。'}</span>
             )}
           </div>
         </div>
+
+        {authBannerMessage && (
+          <div
+            className={`mb-6 rounded-lg border px-4 py-3 text-xs ${
+              authState === 'ok'
+                ? 'border-neon-green/30 bg-neon-green/10 text-neon-green'
+                : 'border-amber-500/30 bg-amber-500/10 text-amber-200'
+            }`}
+          >
+            {authBannerMessage}
+          </div>
+        )}
 
         <div className="mb-6 p-4 rounded-lg border border-white/10 bg-black/15">
           <label className="block text-xs text-white/50 mb-2">管理者シークレット（ADMIN_SECRET と同じ値・任意）</label>
@@ -761,7 +902,7 @@ export const Admin: React.FC = () => {
               <button
                 type="button"
                 onClick={() => void handleSaveOrder()}
-                disabled={!orderDirty || rowSectionDisabled || !configOk || playlistFilter !== ALL_PLAYLISTS}
+                disabled={!orderDirty || rowSectionDisabled || !dbOk || playlistFilter !== ALL_PLAYLISTS}
                 className="text-xs font-bold px-4 py-2 rounded-full bg-neon-cyan text-black disabled:opacity-40"
               >
                 {rowBusyId === '__reorder__' ? '保存中…' : '曲順を保存'}
@@ -820,7 +961,7 @@ export const Admin: React.FC = () => {
                 <select
                   value={renameFrom}
                   onChange={(ev) => setRenameFrom(ev.target.value)}
-                  disabled={rowSectionDisabled || !configOk}
+                  disabled={rowSectionDisabled || !dbOk}
                   className="rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white disabled:opacity-40"
                 >
                   <option value="">変更前</option>
@@ -836,13 +977,13 @@ export const Admin: React.FC = () => {
                   onChange={(ev) => setRenameTo(ev.target.value)}
                   list="playlist-presets"
                   placeholder="変更後"
-                  disabled={rowSectionDisabled || !configOk}
+                  disabled={rowSectionDisabled || !dbOk}
                   className="rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white disabled:opacity-40"
                 />
                 <button
                   type="button"
                   onClick={() => void handleRenamePlaylist()}
-                  disabled={rowSectionDisabled || !configOk || !renameFrom.trim() || !renameTo.trim()}
+                  disabled={rowSectionDisabled || !dbOk || !renameFrom.trim() || !renameTo.trim()}
                   className="rounded-lg bg-white/10 px-4 py-2 text-xs font-bold text-white hover:bg-white/20 disabled:opacity-40"
                 >
                   {rowBusyId === '__playlist-rename__' ? '変更中…' : '一括変更'}
@@ -931,21 +1072,21 @@ export const Admin: React.FC = () => {
                               value={draft.title}
                               onChange={(ev) => handleEditDraftChange('title', ev.target.value)}
                               className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
-                              disabled={rowSectionDisabled || !configOk}
+                              disabled={rowSectionDisabled || !dbOk}
                             />
                             <input
                               type="text"
                               value={draft.artist}
                               onChange={(ev) => handleEditDraftChange('artist', ev.target.value)}
                               className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
-                              disabled={rowSectionDisabled || !configOk}
+                              disabled={rowSectionDisabled || !dbOk}
                             />
                             <textarea
                               value={draft.description}
                               onChange={(ev) => handleEditDraftChange('description', ev.target.value)}
                               className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white"
                               rows={2}
-                              disabled={rowSectionDisabled || !configOk}
+                              disabled={rowSectionDisabled || !dbOk}
                             />
                           </div>
                         ) : (
@@ -960,27 +1101,13 @@ export const Admin: React.FC = () => {
                       </div>
 
                       <div>
-                        <select
+                        <TrackPlaylistInput
+                          trackId={track.id}
                           value={isEditing ? draft.playlist : track.playlist || 'BGM'}
-                          disabled={rowSectionDisabled || !configOk}
-                          onChange={(ev) => {
-                            if (isEditing) {
-                              handleEditDraftChange('playlist', ev.target.value);
-                            } else {
-                              void handlePlaylistChange(track.id, ev.target.value);
-                            }
-                          }}
-                          className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-xs font-bold text-white disabled:opacity-40"
-                        >
-                          {playlistOptions.includes(track.playlist || 'BGM') ? null : (
-                            <option value={track.playlist || 'BGM'}>{track.playlist || 'BGM'}</option>
-                          )}
-                          {playlistOptions.map((option) => (
-                            <option key={option} value={option}>
-                              {option}
-                            </option>
-                          ))}
-                        </select>
+                          disabled={rowSectionDisabled || !dbOk}
+                          playlistOptions={playlistOptions}
+                          onCommit={handlePlaylistChange}
+                        />
                       </div>
 
                       <div className="flex flex-wrap gap-2">
@@ -988,7 +1115,7 @@ export const Admin: React.FC = () => {
                           <>
                             <button
                               type="button"
-                              disabled={rowSectionDisabled || !configOk}
+                              disabled={rowSectionDisabled || !dbOk}
                               onClick={() => void handleSaveTrackMetadata(track.id)}
                               className="text-xs font-bold px-3 py-2 rounded-full bg-neon-green text-black disabled:opacity-40"
                             >
@@ -1009,7 +1136,7 @@ export const Admin: React.FC = () => {
                         ) : (
                           <button
                             type="button"
-                            disabled={rowSectionDisabled || !configOk}
+                            disabled={rowSectionDisabled || !dbOk}
                             onClick={() => beginEditTrack(track)}
                             className="text-xs font-bold px-3 py-2 rounded-full border border-neon-cyan/40 text-neon-cyan hover:bg-neon-cyan/10 disabled:opacity-40"
                           >
