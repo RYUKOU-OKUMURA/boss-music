@@ -63,59 +63,45 @@ function reportMutationError(
   setMessage(`エラー: ${explain ? explain(msg) : msg}`);
 }
 
-interface TrackPlaylistInputProps {
-  trackId: string;
+interface PlaylistToggleSelectProps {
   value: string;
   disabled: boolean;
   playlistOptions: string[];
-  onCommit: (trackId: string, nextPlaylist: string) => void | Promise<void>;
+  onSelect: (nextPlaylist: string) => void;
 }
 
-const TrackPlaylistInput: React.FC<TrackPlaylistInputProps> = ({
-  trackId,
+const PlaylistToggleSelect: React.FC<PlaylistToggleSelectProps> = ({
   value,
   disabled,
   playlistOptions,
-  onCommit,
+  onSelect,
 }) => {
-  const [localValue, setLocalValue] = useState(value);
-  const listId = `track-playlist-${trackId}`;
-
-  useEffect(() => {
-    setLocalValue(value);
-  }, [value]);
-
-  const commit = () => {
-    const normalized = localValue.trim() || 'BGM';
-    const current = value.trim() || 'BGM';
-    if (normalized !== current) {
-      void onCommit(trackId, normalized);
-    }
-  };
+  const current = value.trim() || 'BGM';
 
   return (
-    <>
-      <input
-        type="text"
-        list={listId}
-        value={localValue}
-        onChange={(ev) => setLocalValue(ev.target.value)}
-        onBlur={commit}
-        onKeyDown={(ev) => {
-          if (ev.key === 'Enter') {
-            ev.preventDefault();
-            commit();
-          }
-        }}
-        disabled={disabled}
-        className="w-full rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-xs font-bold text-white disabled:opacity-40"
-      />
-      <datalist id={listId}>
-        {playlistOptions.map((option) => (
-          <option key={option} value={option} />
-        ))}
-      </datalist>
-    </>
+    <div className="flex flex-wrap gap-1.5" role="group" aria-label="プレイリスト">
+      {playlistOptions.map((option) => {
+        const selected = option === current;
+        return (
+          <button
+            key={option}
+            type="button"
+            disabled={disabled}
+            aria-pressed={selected}
+            onClick={() => {
+              if (!selected) onSelect(option);
+            }}
+            className={`rounded-full px-2.5 py-1 text-[11px] font-bold transition-colors disabled:opacity-40 ${
+              selected
+                ? 'bg-neon-purple text-black'
+                : 'border border-white/15 bg-white/5 text-white/70 hover:bg-white/10'
+            }`}
+          >
+            {option}
+          </button>
+        );
+      })}
+    </div>
   );
 };
 
@@ -816,20 +802,12 @@ export const Admin: React.FC = () => {
 
           <div>
             <label className="block text-sm mb-2 opacity-70">プレイリスト</label>
-            <input
-              type="text"
+            <PlaylistToggleSelect
               value={playlist}
-              list="playlist-presets"
-              onChange={(e) => setPlaylist(e.target.value)}
-              placeholder="例: BGM, お気に入り"
-              className="w-full bg-black/50 border border-white/10 rounded p-3 text-white"
               disabled={isUploading}
+              playlistOptions={playlistOptions}
+              onSelect={setPlaylist}
             />
-            <datalist id="playlist-presets">
-              {playlistOptions.map((option) => (
-                <option key={option} value={option} />
-              ))}
-            </datalist>
           </div>
 
           <div>
@@ -975,11 +953,16 @@ export const Admin: React.FC = () => {
                   type="text"
                   value={renameTo}
                   onChange={(ev) => setRenameTo(ev.target.value)}
-                  list="playlist-presets"
+                  list="playlist-rename-presets"
                   placeholder="変更後"
                   disabled={rowSectionDisabled || !dbOk}
                   className="rounded-lg border border-white/10 bg-black/50 px-3 py-2 text-sm text-white disabled:opacity-40"
                 />
+                <datalist id="playlist-rename-presets">
+                  {playlistOptions.map((option) => (
+                    <option key={option} value={option} />
+                  ))}
+                </datalist>
                 <button
                   type="button"
                   onClick={() => void handleRenamePlaylist()}
@@ -1000,7 +983,7 @@ export const Admin: React.FC = () => {
           )}
 
           <div className="overflow-hidden rounded-lg border border-white/10 bg-black/20">
-            <div className="hidden grid-cols-[56px_72px_minmax(180px,1.5fr)_minmax(140px,0.8fr)_minmax(260px,1.2fr)] gap-3 border-b border-white/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40 lg:grid">
+            <div className="hidden grid-cols-[56px_72px_minmax(180px,1.5fr)_minmax(200px,1.2fr)_minmax(260px,1.2fr)] gap-3 border-b border-white/10 px-4 py-3 text-[11px] font-bold uppercase tracking-[0.16em] text-white/40 lg:grid">
               <span>Order</span>
               <span>Cover</span>
               <span>Track</span>
@@ -1029,7 +1012,7 @@ export const Admin: React.FC = () => {
                     onDragEnd={() => setDragTrackId(null)}
                     className={`p-4 transition-colors ${isDragging ? 'bg-neon-cyan/10' : 'bg-transparent'}`}
                   >
-                    <div className="grid gap-4 lg:grid-cols-[56px_72px_minmax(180px,1.5fr)_minmax(140px,0.8fr)_minmax(260px,1.2fr)] lg:items-center">
+                    <div className="grid gap-4 lg:grid-cols-[56px_72px_minmax(180px,1.5fr)_minmax(200px,1.2fr)_minmax(260px,1.2fr)] lg:items-center">
                       <div className="flex items-center gap-2">
                         <span className="cursor-grab rounded-lg border border-white/10 bg-white/5 px-2 py-2 text-xs text-white/45">
                           ::
@@ -1101,12 +1084,11 @@ export const Admin: React.FC = () => {
                       </div>
 
                       <div>
-                        <TrackPlaylistInput
-                          trackId={track.id}
+                        <PlaylistToggleSelect
                           value={isEditing ? draft.playlist : track.playlist || 'BGM'}
                           disabled={rowSectionDisabled || !dbOk}
                           playlistOptions={playlistOptions}
-                          onCommit={handlePlaylistChange}
+                          onSelect={(nextPlaylist) => void handlePlaylistChange(track.id, nextPlaylist)}
                         />
                       </div>
 
