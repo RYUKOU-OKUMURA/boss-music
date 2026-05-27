@@ -21,7 +21,7 @@ export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
   toggleRepeatEnabled,
   toggleShuffleEnabled,
   volume,
-  onVolumeBarClick,
+  onVolumeChange,
 }) => {
   return (
     <div className="relative flex w-full flex-col items-center justify-start px-6 py-6 pb-12 md:py-8">
@@ -51,7 +51,7 @@ export const TrackPageVinylLayout: React.FC<TrackPageLayoutProps> = ({
         toggleRepeatEnabled={toggleRepeatEnabled}
         toggleShuffleEnabled={toggleShuffleEnabled}
         volume={volume}
-        onVolumeBarClick={onVolumeBarClick}
+        onVolumeChange={onVolumeChange}
       />
     </div>
   );

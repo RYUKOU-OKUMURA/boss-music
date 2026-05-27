@@ -4,6 +4,7 @@ import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import { clamp, formatPlaybackTime, pointerRatioInElement } from '../lib/playback';
 import { Play, Pause, SkipBack, SkipForward, Volume2, Maximize2, Repeat2, Shuffle } from 'lucide-react';
 import { Link, useLocation } from 'react-router-dom';
+import { VolumeSlider } from './VolumeSlider';
 
 export const GlobalPlayer: React.FC = () => {
   const {
@@ -94,17 +95,12 @@ export const GlobalPlayer: React.FC = () => {
       {/* Volume */}
       <div className="flex items-center justify-end gap-4 w-1/3">
         <Volume2 className="w-4 h-4 text-zen-mist/60" />
-        <div
-          className="w-24 h-1 bg-white/10 rounded-full cursor-pointer relative"
-          onClick={(e) => {
-            setVolume(pointerRatioInElement(e.clientX, e.currentTarget));
-          }}
-        >
-          <div
-            className="absolute top-0 left-0 h-full bg-neon-cyan rounded-full"
-            style={{ width: `${volume * 100}%` }}
-          />
-        </div>
+        <VolumeSlider
+          value={volume}
+          onChange={setVolume}
+          trackClassName="relative w-24 h-1 cursor-pointer rounded-full bg-white/10 touch-none select-none"
+          fillClassName="absolute top-0 left-0 h-full rounded-full bg-neon-cyan"
+        />
       </div>
     </div>
   );

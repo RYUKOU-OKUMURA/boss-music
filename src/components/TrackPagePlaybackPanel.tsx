@@ -2,6 +2,7 @@ import React from 'react';
 import { Pause, Play, Repeat2, Shuffle, SkipBack, SkipForward, Volume2 } from 'lucide-react';
 import { resolveCoverImageUrl } from '../lib/mediaUrls';
 import type { Track } from '../context/AudioContext';
+import { VolumeSlider } from './VolumeSlider';
 
 interface TrackPagePlaybackPanelProps {
   isCurrent: boolean;
@@ -18,7 +19,7 @@ interface TrackPagePlaybackPanelProps {
   toggleRepeatEnabled: () => void;
   toggleShuffleEnabled: () => void;
   volume: number;
-  onVolumeBarClick: (e: React.MouseEvent<HTMLDivElement>) => void;
+  onVolumeChange: (volume: number) => void;
   accentClassName?: string;
 }
 
@@ -37,7 +38,7 @@ export const TrackPagePlaybackPanel: React.FC<TrackPagePlaybackPanelProps> = ({
   toggleRepeatEnabled,
   toggleShuffleEnabled,
   volume,
-  onVolumeBarClick,
+  onVolumeChange,
   accentClassName = 'text-neon-cyan',
 }) => {
   const nextCover = nextTrack ? resolveCoverImageUrl(nextTrack) : '';
@@ -105,18 +106,7 @@ export const TrackPagePlaybackPanel: React.FC<TrackPagePlaybackPanelProps> = ({
 
       <div className="mt-8 flex w-full max-w-md items-center gap-4 md:max-w-lg">
         <Volume2 className="h-5 w-5 shrink-0 text-white/35" aria-hidden />
-        <div
-          className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-white/10"
-          onClick={onVolumeBarClick}
-          role="slider"
-          tabIndex={0}
-          aria-valuenow={Math.round(volume * 100)}
-          aria-valuemin={0}
-          aria-valuemax={100}
-          aria-label="音量"
-        >
-          <div className="absolute left-0 top-0 h-full rounded-full bg-white/50" style={{ width: `${volume * 100}%` }} />
-        </div>
+        <VolumeSlider value={volume} onChange={onVolumeChange} />
       </div>
 
       <div className="mt-8 flex min-h-16 w-full max-w-md items-center gap-3 rounded-lg border border-white/10 bg-black/20 px-3 py-3 text-left">

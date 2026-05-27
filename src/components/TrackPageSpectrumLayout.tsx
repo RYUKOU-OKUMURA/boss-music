@@ -21,7 +21,7 @@ export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
   toggleRepeatEnabled,
   toggleShuffleEnabled,
   volume,
-  onVolumeBarClick,
+  onVolumeChange,
   isCurrent,
   isPlaying,
   spectrumPanelActive = true,
@@ -64,7 +64,7 @@ export const TrackPageSpectrumLayout: React.FC<TrackPageLayoutProps> = ({
         toggleRepeatEnabled={toggleRepeatEnabled}
         toggleShuffleEnabled={toggleShuffleEnabled}
         volume={volume}
-        onVolumeBarClick={onVolumeBarClick}
+        onVolumeChange={onVolumeChange}
       />
     </div>
   );

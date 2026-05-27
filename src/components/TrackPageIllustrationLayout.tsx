@@ -21,7 +21,7 @@ export const TrackPageIllustrationLayout: React.FC<TrackPageLayoutProps> = ({
   toggleRepeatEnabled,
   toggleShuffleEnabled,
   volume,
-  onVolumeBarClick,
+  onVolumeChange,
   isCurrent,
   isPlaying,
 }) => {
@@ -60,7 +60,7 @@ export const TrackPageIllustrationLayout: React.FC<TrackPageLayoutProps> = ({
         toggleRepeatEnabled={toggleRepeatEnabled}
         toggleShuffleEnabled={toggleShuffleEnabled}
         volume={volume}
-        onVolumeBarClick={onVolumeBarClick}
+        onVolumeChange={onVolumeChange}
       />
     </div>
   );

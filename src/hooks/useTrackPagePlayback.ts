@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { useAudioMain } from '../context/AudioContext';
 import type { Track } from '../context/AudioContext';
-import { pointerRatioInElement } from '../lib/playback';
 
 export interface UseTrackPagePlaybackResult {
   track: Track | null;
@@ -25,7 +24,7 @@ export interface UseTrackPagePlaybackResult {
   onPlayPause: () => void;
   toggleRepeatEnabled: () => void;
   toggleShuffleEnabled: () => void;
-  onVolumeBarClick: (e: MouseEvent<HTMLDivElement>) => void;
+  onVolumeChange: (volume: number) => void;
 }
 
 export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
@@ -182,12 +181,7 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     }
   }, [track, isCurrent, isPlaying, pause, play, trackIndex, activePlaylist]);
 
-  const onVolumeBarClick = useCallback(
-    (e: MouseEvent<HTMLDivElement>) => {
-      setVolume(pointerRatioInElement(e.clientX, e.currentTarget));
-    },
-    [setVolume]
-  );
+  const onVolumeChange = setVolume;
 
   return {
     track: track ?? null,
@@ -210,6 +204,6 @@ export function useTrackPagePlayback(): UseTrackPagePlaybackResult {
     onPlayPause,
     toggleRepeatEnabled,
     toggleShuffleEnabled,
-    onVolumeBarClick,
+    onVolumeChange,
   };
 }

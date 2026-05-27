@@ -54,7 +54,7 @@ export const TrackPage: React.FC = () => {
     toggleRepeatEnabled: m.toggleRepeatEnabled,
     toggleShuffleEnabled: m.toggleShuffleEnabled,
     volume: m.volume,
-    onVolumeBarClick: m.onVolumeBarClick,
+    onVolumeChange: m.onVolumeChange,
     spectrumPanelActive: pattern === 'spectrum',
   };
 
